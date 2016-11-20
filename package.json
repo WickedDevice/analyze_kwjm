@@ -1,0 +1,16 @@
+{
+  "name": "analyze_kwjm",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "csv-parse": "^1.1.7",
+    "csv-stringify": "^1.0.4",
+    "minimist": "^1.2.0"
+  }
+}
