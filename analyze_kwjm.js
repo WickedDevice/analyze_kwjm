@@ -48,6 +48,11 @@ parse(input, {columns: true}, (err, csv) => {
 
 let createIndividualCsv = (key, csv) => {
   console.log(`Creating ./outputs/${key}.csv`);
+
+  if (!fs.existsSync('./outputs')){
+    fs.mkdirSync('./outputs');
+  }
+
   let input = [];
   input.push([
     "Timestamp",
