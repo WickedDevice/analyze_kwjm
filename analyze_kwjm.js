@@ -6,6 +6,7 @@ let parse = require('csv-parse');
 let stringify = require('csv-stringify');
 let fs = require('fs');
 let argv = require('minimist')(process.argv.slice(2));
+let moment = require('moment');
 
 let usage = () => {
   console.log(`
@@ -34,6 +35,9 @@ parse(input, {columns: true}, (err, csv) => {
   let results = {};
   keys.forEach((key) => {
     results[key] = [];
+
+    // while we're at it, make an individual
+    // CSV file for each sensor
     if(key.indexOf("Slot") >= 0){
       createIndividualCsv(key, csv);
     }
@@ -41,9 +45,13 @@ parse(input, {columns: true}, (err, csv) => {
 
   // transpose the rows into columns
   // and coerce the results into numbers
+  let earliestUnixTimestamp = moment(csv[0]["Timestamp"], "MM/DD/YYYY HH:mm:ss").unix();
   csv.forEach( (row) => {
     Object.keys(row).forEach((key) => {
-      if(key != "Sensor_Type"){
+      if (key === "Timestamp"){
+        results[key].push(moment(row[key], "MM/DD/YYYY HH:mm:ss").unix() - earliestUnixTimestamp);
+      }
+      else if(key !== "Sensor_Type"){
         results[key].push(+row[key]);
       }
       else{
@@ -52,6 +60,9 @@ parse(input, {columns: true}, (err, csv) => {
     });
   });
 
+  // at this point we have a vector for each sensor
+  // as well as a time vector of seconds (since the epoch)
+  console.log(results["Timestamp"]);
 
 });
 
