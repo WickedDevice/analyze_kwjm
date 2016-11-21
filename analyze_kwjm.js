@@ -19,7 +19,7 @@ Usage: analyze_kwjm --i="filename.csv"
 let input_filename = argv.i || "usb0.csv";
 let stiffness_pole1 = argv.s1 || 0.05;
 let stiffness_pole2 = argv.s2 || stiffness_pole1;
-let epsilon = argv.eps || 0.01;
+let epsilon = argv.eps || 0.008;
 // check to see if the input file exists and if not exit with an error message and usage
 let input = null;
 try {
@@ -84,6 +84,7 @@ parse(input, {columns: true}, (err, csv) => {
   let level_state = thresholded_temperature_slopes[0];
   let last_edge_idx = 0;
   const minimum_samples_between_edges = 50;
+  let debounced_thresholding = [];
   thresholded_temperature_slopes.forEach((val, idx) => {
     if(val !== level_state){
       if(idx - last_edge_idx > minimum_samples_between_edges) {
@@ -101,6 +102,7 @@ parse(input, {columns: true}, (err, csv) => {
         console.log("warning: ignoring spurious transition at idx " + idx);
       }
     }
+    debounced_thresholding.push(level_state);
   });
 
   // make sure the index of the first falling edge is after the first detected rising edge
@@ -111,7 +113,7 @@ parse(input, {columns: true}, (err, csv) => {
   console.log(rising_edges, falling_edges);
 
   BLV_keys.forEach((key) => {
-    createIndividualCsv(key, csv, null, filtered_temperature, temperature_slope, thresholded_temperature_slopes, results[key]);
+    createIndividualCsv(key, csv, null, filtered_temperature, temperature_slope, thresholded_temperature_slopes, debounced_thresholding, results[key]);
   });
 
   // take a pre-defined portion of each rising -> falling period
@@ -129,7 +131,7 @@ parse(input, {columns: true}, (err, csv) => {
       // establish the average and stdev voltage for each slot
       let avg_v = jStat.mean(results[key].slice(rising_edges[ii], falling_edges[ii]));
       let std_v = jStat.stdev(results[key].slice(rising_edges[ii], falling_edges[ii]));
-      console.log(`${key}`, avg_t, std_t, avg_v, std_v);
+      // console.log(`${key}`, avg_t, std_t, avg_v, std_v);
     });
   }
 
@@ -138,7 +140,7 @@ parse(input, {columns: true}, (err, csv) => {
 
 });
 
-let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope_thresh, voltages) => {
+let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope_thresh, debounced_thresh, voltages) => {
   console.log(`Creating ./outputs/${key}.csv`);
 
   if(!filename){
@@ -158,6 +160,7 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
     "Filtered_Temperature_degC",
     "Filtered_Temp_Slopes",
     "Thresholded_TSlopes",
+    "Debounced_Thresholded_TSlopes",
     `Filtered_${csv[0]["Sensor_Type"]}_V`
   ]);
 
@@ -173,6 +176,7 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
       filt_temp[idx] || 0,
       filt_temp_slope[idx] || 0,
       slope_thresh[idx] || 0,
+      debounced_thresh[idx] || 0,
       filtered_voltage[idx] || 0
     ]);
   });
