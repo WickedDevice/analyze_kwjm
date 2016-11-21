@@ -7,6 +7,7 @@ let stringify = require('csv-stringify');
 let fs = require('fs');
 let argv = require('minimist')(process.argv.slice(2));
 let moment = require('moment');
+let jStat = require('jStat');
 
 let usage = () => {
   console.log(`
@@ -61,13 +62,20 @@ parse(input, {columns: true}, (err, csv) => {
   });
 
   // at this point we have a vector for each sensor
-  // as well as a time vector of seconds (since the epoch)
-  console.log(results["Timestamp"]);
+  // as well as a time vector of seconds (since the first record)
+
+  // do some analysis on the temperature vector to find out where
+  // the temperature plateaus are and what their mean values are
+
 
 });
 
-let createIndividualCsv = (key, csv) => {
+let createIndividualCsv = (key, csv, filename) => {
   console.log(`Creating ./outputs/${key}.csv`);
+
+  if(!filename){
+    filename = key;
+  }
 
   if (!fs.existsSync('./outputs')){
     fs.mkdirSync('./outputs');
@@ -92,7 +100,7 @@ let createIndividualCsv = (key, csv) => {
 
   stringify(input, (err, output) => {
     // write the string to file
-    fs.writeFileSync(`./outputs/${key}.csv`, output);
+    fs.writeFileSync(`./outputs/${filename}.csv`, output);
   });
 };
 

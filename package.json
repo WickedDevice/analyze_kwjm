@@ -11,6 +11,7 @@
   "dependencies": {
     "csv-parse": "^1.1.7",
     "csv-stringify": "^1.0.4",
+    "jStat": "^1.5.3",
     "minimist": "^1.2.0",
     "moment": "^2.16.0"
   }
