@@ -17,7 +17,16 @@ Usage: analyze_kwjm --i=filename.csv
 let input_filename = argv.i || "usb0.csv";
 
 // check to see if the input file exists and if not exit with an error message and usage
-let input = fs.readFileSync(input_filename);
+let input = null;
+try {
+  input = fs.readFileSync(input_filename);
+}
+catch(err){
+  console.log(err);
+  usage();
+  process.exit(1);
+}
+
 parse(input, {columns: true}, (err, csv) => {
   let keys = Object.keys(csv[0]);
 
@@ -56,16 +65,14 @@ let createIndividualCsv = (key, csv) => {
   let input = [];
   input.push([
     "Timestamp",
-    "Sensor_Type",
     "Temperature_degC",
     "Humidity_%",
-    key
+    csv[0]["Sensor_Type"]
   ]);
 
   csv.forEach((row) => {
     input.push([
       row["Timestamp"],
-      row["Sensor_Type"],
       row["Temperature_degC"],
       row["Humidity_%"],
       row[key]
