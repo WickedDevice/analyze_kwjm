@@ -11,13 +11,15 @@ let jStat = require('jStat').jStat;
 
 let usage = () => {
   console.log(`
-Usage: analyze_kwjm --i=filename.csv
+Usage: analyze_kwjm --i="filename.csv"
 `);
 
 };
 
 let input_filename = argv.i || "usb0.csv";
-
+let stiffness_pole1 = argv.s1 || 0.05;
+let stiffness_pole2 = argv.s2 || stiffness_pole1;
+let epsilon = argv.eps || 0.01;
 // check to see if the input file exists and if not exit with an error message and usage
 let input = null;
 try {
@@ -41,7 +43,6 @@ parse(input, {columns: true}, (err, csv) => {
     // while we're at it, make an individual
     // CSV file for each sensor
     if(key.indexOf("Slot") >= 0){
-      createIndividualCsv(key, csv);
       BLV_keys.push(key);
     }
   });
@@ -65,30 +66,13 @@ parse(input, {columns: true}, (err, csv) => {
 
   // at this point we have a vector for each sensor
   // as well as a time vector of seconds (since the first record)
-
-  // first filter the temperatures using with a fixed window of 100 samples
-  const depth = 100;
-  let v = [];
-  for(let ii = 0; ii < results["Temperature_degC"].length; ii++){
-    if(ii == 0){
-      v.push(results["Temperature_degC"][0]);
-    }
-    else if(ii < depth){
-      v.push((results["Temperature_degC"][ii] + (v[ii-1] * ii) ) / (ii + 1) );
-    }
-    else{
-      v.push(v[ii-1]
-        + ( results["Temperature_degC"][ii] / depth )
-        - ( results["Temperature_degC"][ii - depth] / depth ) );
-    }
-  }
+  let filtered_temperature = two_pole_filter(results["Temperature_degC"], stiffness_pole1, stiffness_pole2);
 
   // then apply a difference filter on the result
-  v = jStat.diff(v);
+  let temperature_slope = two_pole_filter(jStat.diff(filtered_temperature), stiffness_pole1, stiffness_pole2);
 
   // then threshold the result
-  const epsilon = 0.01;
-  v = v.map((val) => {
+  let thresholded_temperature_slopes = temperature_slope.map((val) => {
     return val > -epsilon && val < +epsilon ? 1 : 0;
   });
 
@@ -97,10 +81,10 @@ parse(input, {columns: true}, (err, csv) => {
   // find the indices of each rising and falling edges
   let rising_edges = [];
   let falling_edges = [];
-  let level_state = v[0];
+  let level_state = thresholded_temperature_slopes[0];
   let last_edge_idx = 0;
-  const minimum_samples_between_edges = 100;
-  v.forEach((val, idx) => {
+  const minimum_samples_between_edges = 50;
+  thresholded_temperature_slopes.forEach((val, idx) => {
     if(val !== level_state){
       if(idx - last_edge_idx > minimum_samples_between_edges) {
         if (val == 0) {
@@ -116,8 +100,18 @@ parse(input, {columns: true}, (err, csv) => {
         // otherwise ignore it as a spurious transition
         console.log("warning: ignoring spurious transition at idx " + idx);
       }
-
     }
+  });
+
+  // make sure the index of the first falling edge is after the first detected rising edge
+  while(rising_edges[0] >= falling_edges[0] && falling_edges.length > 0){
+    falling_edges = falling_edges.slice(1);
+  }
+
+  console.log(rising_edges, falling_edges);
+
+  BLV_keys.forEach((key) => {
+    createIndividualCsv(key, csv, null, filtered_temperature, temperature_slope, thresholded_temperature_slopes, results[key]);
   });
 
   // take a pre-defined portion of each rising -> falling period
@@ -127,7 +121,7 @@ parse(input, {columns: true}, (err, csv) => {
   }
 
   for(let ii = 0; ii < 5; ii++){
-    console.log(`BLV Analyzing period ${rising_edges[ii]} .. ${falling_edges[ii]}`);
+    console.log(`BLV Analyzing period ${rising_edges[ii]} ... ${falling_edges[ii]} \t= ${falling_edges[ii] - rising_edges[ii]} samples`);
     // establish average temperature for this period
     let avg_t = jStat.mean(results["Temperature_degC"].slice(rising_edges[ii], falling_edges[ii]));
     let std_t = jStat.stdev(results["Temperature_degC"].slice(rising_edges[ii], falling_edges[ii]));
@@ -142,10 +136,9 @@ parse(input, {columns: true}, (err, csv) => {
   // having determined the average temperature and voltage for each slot in each blv period
   // calculate the slope and intercepts for the blv commands
 
-
 });
 
-let createIndividualCsv = (key, csv, filename) => {
+let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope_thresh, voltages) => {
   console.log(`Creating ./outputs/${key}.csv`);
 
   if(!filename){
@@ -161,15 +154,26 @@ let createIndividualCsv = (key, csv, filename) => {
     "Timestamp",
     "Temperature_degC",
     "Humidity_%",
-    csv[0]["Sensor_Type"]
+    csv[0]["Sensor_Type"],
+    "Filtered_Temperature_degC",
+    "Filtered_Temp_Slopes",
+    "Thresholded_TSlopes",
+    `Filtered_${csv[0]["Sensor_Type"]}_V`
   ]);
 
-  csv.forEach((row) => {
+  // generate filtered voltage
+  let filtered_voltage = two_pole_filter(voltages, stiffness_pole1, stiffness_pole2);
+
+  csv.forEach((row, idx) => {
     input.push([
       row["Timestamp"],
       row["Temperature_degC"],
       row["Humidity_%"],
-      row[key]
+      row[key],
+      filt_temp[idx] || 0,
+      filt_temp_slope[idx] || 0,
+      slope_thresh[idx] || 0,
+      filtered_voltage[idx] || 0
     ]);
   });
 
@@ -178,6 +182,23 @@ let createIndividualCsv = (key, csv, filename) => {
     fs.writeFileSync(`./outputs/${filename}.csv`, output);
   });
 };
+
+let two_pole_filter = (vec, s1, s2) => {
+  let v_first_pole = vec[0];
+  let v = []; // second pole output
+
+  for(let ii = 0; ii < vec.length; ii++){
+    if(ii == 0){
+      v.push(v_first_pole );
+    }
+    else{
+      v_first_pole = v_first_pole + ( vec[ii] - v_first_pole ) * s1;
+      v.push( v[ii-1] + ( v_first_pole - v[ii-1] ) * s2 );
+    }
+  }
+
+  return v;
+}
 
 process.on('uncaughtException', (err) => {
   console.log(err);
