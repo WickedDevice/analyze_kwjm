@@ -388,6 +388,7 @@ let optimize_region = (data, rising_idx, falling_idx) => {
   // declare the winner!
   region.rising = final_results[0].idx;
   region.falling = region.rising + num_samples - 1;
+  region.num_samples = num_samples;
   region.rsquared = final_results[0].rsquared;
   region.slope = final_results[0].slope;
   region.intercept = final_results[0].intercept;
