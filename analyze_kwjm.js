@@ -187,6 +187,28 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
     // write the string to file
     fs.writeFileSync(`./outputs/${filename}.csv`, output);
   });
+
+  // now that we've done all this work to establish regions of interest, its time to actually
+  // calculate the BLV data, how exciting!
+  let blv_data = [];
+  for(let ii = 0; ii < optimized_regions.length - 1; ii++){
+    let idx00 = optimized_regions[ii].rising;
+    let idx01 = optimized_regions[ii].falling;
+    let idx10 = optimized_regions[ii+1].rising;
+    let idx11 = optimized_regions[ii+1].falling;
+    let mean_temperature_low = jStat.mean(filt_temp.slice(idx00, idx01));
+    let mean_temperature_high = jStat.mean(filt_temp.slice(idx10, idx11));
+    let mean_voltage_lowtemp = optimized_regions[ii].mean;
+    let mean_voltage_hightemp = optimized_regions[ii+1].mean;
+
+    let rise = mean_voltage_hightemp - mean_voltage_lowtemp;
+    let run = mean_temperature_high - mean_temperature_low;
+    let slope = rise / run;
+    let intercept = mean_voltage_hightemp - slope * mean_temperature_high; // b = y - mx
+
+    console.log(mean_temperature_low, slope, intercept);
+  }
+
 };
 
 let two_pole_filter = (vec, s1, s2) => {
@@ -207,11 +229,13 @@ let two_pole_filter = (vec, s1, s2) => {
 };
 
 let optimize_regions = (data, rising_idxs, falling_idxs) => {
-  let regions = {rising: [], falling: []};
+  let regions = {rising: [], falling: [], means: [], stddevs: []};
   for(let ii = 0; ii < rising_idxs.length; ii++){
     let reg = optimize_region(data, rising_idxs[ii], falling_idxs[ii]);
     regions.rising.push(reg.rising);
     regions.falling.push(reg.falling);
+    regions.means.push(reg.mean);
+    regions.stddevs.push(reg.stdev);
   }
   return regions;
 };
@@ -240,7 +264,9 @@ let optimize_region = (data, rising_idx, falling_idx) => {
     region_regressions.push({
       idx: rising_idx + ii,
       slope: Math.abs(obj.slope),
-      intercept: obj.intercept
+      intercept: obj.intercept,
+      mean: obj.mean,
+      stdev: obj.stdev
     });
   }
 
@@ -261,6 +287,8 @@ let optimize_region = (data, rising_idx, falling_idx) => {
       rsquared: rsquared,
       slope: region_regressions[ii].slope,
       intercept: region_regressions[ii].intercept,
+      mean: region_regressions[ii].mean,
+      stdev: region_regressions[ii].stdev,
       heuristic: slope_fit_heuristic({
           slope: region_regressions[ii].slope,
           rsquared: rsquared,
@@ -296,6 +324,8 @@ let optimize_region = (data, rising_idx, falling_idx) => {
   region.rsquared = region_rsquared[0].rsquared;
   region.slope = region_rsquared[0].slope;
   region.intercept = region_rsquared[0].intercept;
+  region.mean = region_rsquared[0].mean;
+  region.stdev = region_rsquared[0].stdev;
 
   // sanity check
   // n = (regions.rising + num_samples - 1) - regions.rising + 1
@@ -313,11 +343,11 @@ let getRegressionSlope = (data, start_idx, num_samples) => {
   let mx = jStat.mean(uniform_time_vector);
   let my = jStat.mean(other_vector);
   let sx = jStat.stdev(uniform_time_vector, true); // sample standard dev
-  let sy = jStat.stdev(uniform_time_vector, true); // sample standard dev
+  let sy = jStat.stdev(other_vector, true); // sample standard dev
   let sumxy = jStat.sum(jStat([uniform_time_vector, other_vector]).product());
   let rxy = ( sumxy - ( n * mx * my ) ) / ( n * sx * sy );
   let slope = rxy * sy / sx;
-  return { slope: slope, intercept: my - slope * mx };
+  return { slope: slope, intercept: my - slope * mx, mean: my, stdev: sy };
 };
 
 let getRSquared = (data, start_idx, num_samples, slope, intercept) => {
@@ -360,8 +390,8 @@ let slope_fit_heuristic = (obj, min_slope, max_slope, min_rsquared, max_rsquared
   let fit = obj.rsquared;    // values closer to max_rsquared are better
 
   // flip slope over, subtract off baseline, and normalize slope
-  slope = max_slope - slope; // now values closer to max slope are better
   slope -= min_slope;
+  slope = max_slope - slope; // now values closer to max slope are better
   slope /= max_slope;
 
   // subtract off baseline and normalize rsquared
