@@ -17,12 +17,14 @@ Usage: analyze_kwjm --i="filename.csv"
 };
 
 let input_filename = argv.i || "usb0.csv";
-let stiffness_pole1 = argv.s1 || 0.05;
-let stiffness_pole2 = argv.s2 || stiffness_pole1;
-let epsilon = argv.eps || 0.008;
-let analysis_width_pct = argv.pct || 0.20; // use at least this percentage of each analysis region
+let stiffness_pole1 = argv.s || 0.05;
+let stiffness_pole2 = argv.q || stiffness_pole1;
+let epsilon = argv.e || 0.008;
+let analysis_width_pct = argv.p || 0.20; // use at least this percentage of each analysis region
 let slope_fit_weight  = argv.h || 0.85; // git 85% priority to slope, 15% priority to fit
-let better_margin = argv.b || 0.01; // you hae to have a .01 better heuristic value to qualify as really better
+let better_margin = argv.m || 0.01; // you hae to have a .01 better heuristic value to qualify as really better
+let taboo_front_pct = argv.f || 0.50; // don't allow solutions in the first 50% of the window
+let taboo_tail_pct = argv.t || 0.10; // don't allow solutions in the last 10% of the window
 
 // check to see if the input file exists and if not exit with an error message and usage
 let input = null;
@@ -218,7 +220,9 @@ let optimize_region = (data, rising_idx, falling_idx) => {
   let region = {rising: 0, falling: 0};
   let window_length = falling_idx - rising_idx;
   let num_samples = Math.ceil(window_length * analysis_width_pct);
-  let half_window_length = Math.floor(window_length * 0.5);
+  let start_offset_idx = Math.floor(window_length * taboo_front_pct);
+  let end_offset_idx = Math.floor(window_length * taboo_tail_pct);
+
   let region_regressions = [];
   // calculate the regression slope for each region of width num_samples
   // (data.length - 1) - ii + 1 = num_samples
@@ -228,7 +232,7 @@ let optimize_region = (data, rising_idx, falling_idx) => {
   let max_slope = 0;
 
   // start at 2 * num_samples, effectively disallowing the answer to be flush left
-  for(let ii = half_window_length; ii <= window_length - num_samples; ii++){
+  for(let ii = start_offset_idx; ii <= window_length - num_samples - end_offset_idx; ii++){
     let obj = getRegressionSlope(data, rising_idx + ii, num_samples);
     if(Math.abs(obj.slope) < min_slope) min_slope = Math.abs(obj.slope);
     if(Math.abs(obj.slope) > max_slope) max_slope = Math.abs(obj.slope);
