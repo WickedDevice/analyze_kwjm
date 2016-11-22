@@ -364,11 +364,25 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
     }
   }
 
-  // TODO: Generate a summary file
-  // the contents of the smmary file are a table with columns of the keys of the blv record
-  // and a row for each bin
+  generateIndividualBlvFile(`${filename}_blv`, sensor_type, blv_data);
 
   return blv_data; // return the blv data
+};
+
+let generateIndividualBlvFile = (filename, sensor_type, data) => {
+  let commands = [];
+  commands.push(`${sensor_type}_blv clear`);
+  data.blvs.forEach((blv) => {
+    let command = `${sensor_type}_blv add ${blv.temperature} ${blv.slope} ${blv.intercept}`;
+    commands.push(command);
+  });
+
+  let obj = {
+    commands: commands,
+    data:  data
+  };
+
+  fs.writeFileSync(`./outputs/${filename}.json`, JSON.stringify(obj, null, 2));
 };
 
 let two_pole_filter = (vec, s1, s2) => {
