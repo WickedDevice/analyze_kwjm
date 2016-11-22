@@ -20,8 +20,8 @@ let input_filename = argv.i || "usb0.csv";
 let stiffness_pole1 = argv.s1 || 0.05;
 let stiffness_pole2 = argv.s2 || stiffness_pole1;
 let epsilon = argv.eps || 0.008;
-let leading_discard_fraction = argv.ld || 0.50;
-let trailing_discard_fraction = argv.td || 0.20;
+let analysis_width_pct = argv.pct || 0.20; // use at least this percentage of each analysis region
+let topn = argv.t || 30;
 
 // check to see if the input file exists and if not exit with an error message and usage
 let input = null;
@@ -122,80 +122,20 @@ parse(input, {columns: true}, (err, csv) => {
   rising_edges = rising_edges.slice(0, min_l);
   falling_edges = falling_edges.slice(0, min_l);
 
-  // clean the debounced thresholding array up by:
-  // (1) setting value to zero up to the first rising edge
-  // (2) moving each rising edge forward half the distance to it's corresponding falling edge
-  // (3) backing off each falling edge by 5% of the window
-
-  for(let ii = 0; ii < falling_edges.length; ii++){
-    let num_samples = falling_edges[ii] - rising_edges[ii];
-    let new_rising_edge = Math.floor(rising_edges[ii] + (leading_discard_fraction * num_samples));
-    let new_falling_edge = Math.floor(falling_edges[ii] - trailing_discard_fraction * num_samples);
-
-    console.log(`${num_samples} : ${rising_edges[ii]} -> ${falling_edges[ii]}, ${new_rising_edge} -> ${new_falling_edge} `);
-
-    if(new_rising_edge > new_falling_edge){
-      console.log(`failure: major problem, nothing left after removing leading and trailing segments from segment ${rising_edges[ii]} ... ${falling_edges[ii]}`)
-    }
-    else{
-      rising_edges[ii] = new_rising_edge;
-      falling_edges[ii] = new_falling_edge;
-    }
-  }
-
-  // expand the edge events into a vector
-  let debounced_thresholding = [];
-  for(let ii = 0; ii < rising_edges[0] - 1; ii++){
-    debounced_thresholding.push(0);
-  }
-  for(let ii = 0; ii < rising_edges.length - 1; ii++){
-    while(debounced_thresholding.length < falling_edges[ii] - 1){
-      debounced_thresholding.push(1);
-    }
-
-    while(debounced_thresholding.length < rising_edges[ii + 1] - 1){
-      debounced_thresholding.push(0);
-    }
-  }
-  while(debounced_thresholding.length < falling_edges[rising_edges.length - 1] - 1){
-    debounced_thresholding.push(1);
-  }
-  while(debounced_thresholding.length < thresholded_temperature_slopes.length){
-    debounced_thresholding.push(0);
-  }
-
-
   console.log(rising_edges, falling_edges);
-
-  BLV_keys.forEach((key) => {
-    createIndividualCsv(key, csv, null, filtered_temperature, temperature_slope, thresholded_temperature_slopes, debounced_thresholding, results[key]);
-  });
-
-  // take a pre-defined portion of each rising -> falling period
-  // as a BLV analysis period, and expect 5 periods
   if(rising_edges.length < 5 || falling_edges.length < 5){
     console.log("warning: not enough rising / falling edges found in temperature data");
   }
 
-  for(let ii = 0; ii < 5; ii++){
-    console.log(`BLV Analyzing period ${rising_edges[ii]} ... ${falling_edges[ii]} \t= ${falling_edges[ii] - rising_edges[ii]} samples`);
-    // establish average temperature for this period
-    let avg_t = jStat.mean(results["Temperature_degC"].slice(rising_edges[ii], falling_edges[ii]));
-    let std_t = jStat.stdev(results["Temperature_degC"].slice(rising_edges[ii], falling_edges[ii]));
-    BLV_keys.forEach((key) => {
-      // establish the average and stdev voltage for each slot
-      let avg_v = jStat.mean(results[key].slice(rising_edges[ii], falling_edges[ii]));
-      let std_v = jStat.stdev(results[key].slice(rising_edges[ii], falling_edges[ii]));
-      // console.log(`${key}`, avg_t, std_t, avg_v, std_v);
-    });
-  }
+  //BLV_keys.forEach((key) => {
+  let key = BLV_keys[0];
+  createIndividualCsv(key, csv, null, filtered_temperature, temperature_slope, thresholded_temperature_slopes, results[key], rising_edges, falling_edges);
+  //});
 
-  // having determined the average temperature and voltage for each slot in each blv period
-  // calculate the slope and intercepts for the blv commands
 
 });
 
-let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope_thresh, debounced_thresh, voltages) => {
+let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope_thresh, voltages, rising, falling) => {
   console.log(`Creating ./outputs/${key}.csv`);
 
   if(!filename){
@@ -206,6 +146,13 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
     fs.mkdirSync('./outputs');
   }
 
+  // generate filtered voltage
+  let filtered_voltage = two_pole_filter(voltages, stiffness_pole1, stiffness_pole2);
+  let optimized_regions = optimize_regions(filtered_voltage, rising, falling);
+  console.log(optimized_regions);
+
+  let debounced_thresh = expand_regions(voltages, optimized_regions.rising, optimized_regions.falling);
+
   let input = [];
   input.push([
     "Timestamp",
@@ -215,12 +162,9 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
     "Filtered_Temperature_degC",
     "Filtered_Temp_Slopes",
     "Thresholded_TSlopes",
-    "Debounced_Thresholded_TSlopes",
+    "Optimized_Thresholded_TSlopes",
     `Filtered_${csv[0]["Sensor_Type"]}_V`
   ]);
-
-  // generate filtered voltage
-  let filtered_voltage = two_pole_filter(voltages, stiffness_pole1, stiffness_pole2);
 
   csv.forEach((row, idx) => {
     input.push([
@@ -257,7 +201,143 @@ let two_pole_filter = (vec, s1, s2) => {
   }
 
   return v;
-}
+};
+
+let optimize_regions = (data, rising_idxs, falling_idxs) => {
+  let regions = {rising: [], falling: []};
+  for(let ii = 0; ii < rising_idxs.length; ii++){
+    let reg = optimize_region(data, rising_idxs[ii], falling_idxs[ii]);
+    regions.rising.push(reg.rising);
+    regions.falling.push(reg.falling);
+  }
+  return regions;
+};
+
+let optimize_region = (data, rising_idx, falling_idx) => {
+  let region = {rising: 0, falling: 0};
+  let window_length = falling_idx - rising_idx;
+  let num_samples = Math.ceil(window_length * analysis_width_pct);
+  let region_regressions = [];
+  // calculate the regression slope for each region of width num_samples
+  // (data.length - 1) - ii + 1 = num_samples
+  // data.length  - ii = num_samples
+  // therefore, last ii = data.length - num_samples
+  for(let ii = 0; ii <= window_length - num_samples; ii++){
+    let obj = getRegressionSlope(data, rising_idx + ii, num_samples);
+    region_regressions.push({
+      idx: rising_idx + ii,
+      slope: Math.abs(obj.slope),
+      intercept: obj.intercept
+    });
+  }
+
+  // ok we've got all the slopes, now find the top N of them.
+  // sort the region slopes by slope ascending
+  region_regressions.sort((a, b) => {
+    if (a.slope < b.slope)
+      return -1;
+    if (a.slope > b.slope)
+      return 1;
+
+    // slopes were equal...
+    // break ties by the rule larger idx should sort earlier
+    if(a.idx > b.idx)
+      return -1;
+    else
+      return 1;
+
+    // technically unreachable code
+    return 0;
+  });
+
+  // perform a secondary analysis on the topn results (closest to zero) slopes
+  // to determine, which among them is the highest r^2 (coefficient of determination)
+  let region_rsquared = [];
+  for(let ii = 0; ii < topn; ii++){
+    region_rsquared.push({
+      idx: region_regressions[ii].idx,
+      rsquared: getRSquared(data, region_regressions[ii].idx, num_samples,
+        region_regressions[ii].slope, region_regressions[ii].intercept)
+    });
+  }
+
+  region_rsquared.sort((a, b) => {
+    // we want larger rsquared to sort earlier in the array
+    if (a.rsquared > b.rsquared)
+      return -1;
+    if (a.rsquared < b.rsquared)
+      return 1;
+
+    // sorting based on rsquared resulted in a tie...
+    // break ties by the rule larger idx should sort earlier
+    if(a.idx > b.idx)
+      return -1;
+    else
+      return 1;
+
+    // technically unreachable code
+    return 0;
+  });
+
+  // declare the winner!
+  region.rising = region_rsquared[0].idx;
+  region.falling = region.rising + num_samples - 1;
+  // sanity check
+  // n = (regions.rising + num_samples - 1) - regions.rising + 1
+  // n = num_samples.
+
+  console.log('done.');
+
+  return region;
+};
+
+let getRegressionSlope = (data, start_idx, num_samples) => {
+  let uniform_time_vector = data.slice(start_idx, start_idx + num_samples).map((v, idx) => { return idx; });
+  let other_vector = data.slice(start_idx, start_idx + num_samples);
+  let n = num_samples;
+  let mx = jStat.mean(uniform_time_vector);
+  let my = jStat.mean(other_vector);
+  let sx = jStat.stdev(uniform_time_vector, true); // sample standard dev
+  let sy = jStat.stdev(uniform_time_vector, true); // sample standard dev
+  let sumxy = jStat.sum(jStat([uniform_time_vector, other_vector]).product());
+  let rxy = ( sumxy - ( n * mx * my ) ) / ( n * sx * sy );
+  let slope = rxy * sy / sx;
+  return { slope: slope, intercept: my - slope * mx };
+};
+
+let getRSquared = (data, start_idx, num_samples, slope, intercept) => {
+  let uniform_time_vector = data.slice(start_idx, start_idx + num_samples).map((v, idx) => { return idx; });
+  let model_vector = uniform_time_vector.map((x) => {
+    return slope * x + intercept;
+  });
+
+  let rho = jStat.corrcoeff(model_vector, data);
+  return rho * rho;
+};
+
+let expand_regions = (data, rising_idxs, falling_idxs) => {
+  let vec = [];
+  for(let ii = 0; ii < rising_idxs[0] - 1; ii++){
+    vec.push(0);
+  }
+  for(let ii = 0; ii < rising_idxs.length - 1; ii++){
+    while(vec.length < falling_idxs[ii] - 1){
+      vec.push(1);
+    }
+
+    while(vec.length < rising_idxs[ii + 1] - 1){
+      vec.push(0);
+    }
+  }
+  while(vec.length < falling_idxs[rising_idxs.length - 1] - 1){
+    vec.push(1);
+  }
+  while(vec.length < data.length){
+    vec.push(0);
+  }
+
+  return vec;
+};
 
 process.on('uncaughtException', (err) => {
   console.log(err);
