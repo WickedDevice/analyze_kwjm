@@ -11,7 +11,7 @@ let jStat = require('jStat').jStat;
 
 let usage = () => {
   console.log(`
-Usage: analyze_kwjm --i="filename.csv"
+Usage: analyze_kwjm --i="filename.csv" --batch=3 --serial=14
 `);
 
 };
@@ -28,6 +28,38 @@ let taboo_front_pct = argv.f || 0.50;    // don't allow solutions in the first 5
 let taboo_tail_pct = argv.t || 0.10;     // don't allow solutions in the last 10% of the window
 let min_slope_percentile = argv.r || 0.75;
 let min_fit_percentile = argv.g || 0.75;
+let lot_number = argv.batch || null;
+let starting_serial_number = argv.serial || null;
+
+if(lot_number === null || starting_serial_number === null){
+  console.error("lot_number aond starting_serial_number are required arguments");
+  usage();
+  process.exit(1);
+}
+
+lot_number = parseInt(lot_number);
+starting_serial_number = parseInt(starting_serial_number);
+if(isNaN(lot_number)){
+  console.error("Lot number is required and must be an integer");
+  usage();
+  process.exit(1);
+}
+
+if(isNaN(starting_serial_number)){
+  console.error("Starting serial number is required and must be an integer");
+  usage();
+  process.exit(1);
+}
+
+let zero_pad = (n, digits) => {
+  let str = `${n}`;
+  while(str.length < digits){
+    str = `0${str}`;
+  }
+  return str;
+}
+
+let output_filename_partial = `Batch_${zero_pad(lot_number, 4)}_Serial_${zero_pad(starting_serial_number, 4)}_${zero_pad(starting_serial_number + 50 - 1, 4)}`;
 
 // check to see if the input file exists and if not exit with an error message and usage
 let input = null;
@@ -58,6 +90,7 @@ parse(input, {columns: true}, (err, csv) => {
 
   // transpose the rows into columns
   // and coerce the results into numbers
+  let sensor_type = null;
   let earliestUnixTimestamp = moment(csv[0]["Timestamp"], "MM/DD/YYYY HH:mm:ss").unix();
   csv.forEach( (row) => {
     Object.keys(row).forEach((key) => {
@@ -69,6 +102,7 @@ parse(input, {columns: true}, (err, csv) => {
       }
       else{
         results[key].push(row[key]);
+        sensor_type = row[key];
       }
     });
   });
@@ -137,7 +171,9 @@ parse(input, {columns: true}, (err, csv) => {
   BLV_keys.forEach((key, idx) => {
   //let key = BLV_keys[0];
     let print = false; // (idx == 0)
-    let blv_record = createIndividualCsv(key, csv, null, filtered_temperature, temperature_slope, thresholded_temperature_slopes, results[key], rising_edges, falling_edges, print);
+    let slot_number = +key.split("_")[1];
+    let target_fname = `${sensor_type}_Batch_${zero_pad(lot_number, 4)}_Serial_${zero_pad(starting_serial_number + slot_number - 1, 4)}_Slot_${zero_pad(slot_number, 2)}`;
+    let blv_record = createIndividualCsv(key, csv, target_fname, filtered_temperature, temperature_slope, thresholded_temperature_slopes, results[key], rising_edges, falling_edges, print);
     blv_records[key] = blv_record;
   });
 
