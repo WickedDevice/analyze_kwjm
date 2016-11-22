@@ -19,12 +19,15 @@ Usage: analyze_kwjm --i="filename.csv"
 let input_filename = argv.i || "usb0.csv";
 let stiffness_pole1 = argv.s || 0.05;
 let stiffness_pole2 = argv.q || stiffness_pole1;
-let epsilon = argv.e || 0.008;
+let epsilon = argv.e || 0.008;           // used by thresholding binning algorithm
 let analysis_width_pct = argv.p || 0.20; // use at least this percentage of each analysis region
-let slope_fit_weight  = argv.h || 0.85; // git 85% priority to slope, 15% priority to fit
-let better_margin = argv.m || 0.01; // you hae to have a .01 better heuristic value to qualify as really better
-let taboo_front_pct = argv.f || 0.50; // don't allow solutions in the first 50% of the window
-let taboo_tail_pct = argv.t || 0.10; // don't allow solutions in the last 10% of the window
+let slope_fit_weight  = argv.h || 0.85;  // git 85% priority to slope, 15% priority to fit
+let better_slope_sig_margin = argv.m || 0.05;    // you hae to have a 5% better value to qualify as *really* better
+let better_rsquared_sig_margin = argv.y || 0.05; // you hae to have a 5% better value to qualify as *really* better
+let taboo_front_pct = argv.f || 0.50;    // don't allow solutions in the first 50% of the window
+let taboo_tail_pct = argv.t || 0.10;     // don't allow solutions in the last 10% of the window
+let min_slope_percentile = argv.r || 0.75;
+let min_fit_percentile = argv.g || 0.75;
 
 // check to see if the input file exists and if not exit with an error message and usage
 let input = null;
@@ -130,15 +133,16 @@ parse(input, {columns: true}, (err, csv) => {
     console.log("warning: not enough rising / falling edges found in temperature data");
   }
 
-  BLV_keys.forEach((key) => {
+  BLV_keys.forEach((key, idx) => {
   //let key = BLV_keys[0];
-    createIndividualCsv(key, csv, null, filtered_temperature, temperature_slope, thresholded_temperature_slopes, results[key], rising_edges, falling_edges);
+    let print = (idx == 0)
+    createIndividualCsv(key, csv, null, filtered_temperature, temperature_slope, thresholded_temperature_slopes, results[key], rising_edges, falling_edges, print);
   });
 
 
 });
 
-let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope_thresh, voltages, rising, falling) => {
+let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope_thresh, voltages, rising, falling, print) => {
   console.log(`Creating ./outputs/${key}.csv`);
 
   if(!filename){
@@ -151,7 +155,7 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
 
   // generate filtered voltage
   let filtered_voltage = two_pole_filter(voltages, stiffness_pole1, stiffness_pole2);
-  let optimized_regions = optimize_regions(filtered_voltage, rising, falling);
+  let optimized_regions = optimize_regions(filtered_voltage, rising, falling, print);
   // console.log(optimized_regions);
 
   let debounced_thresh = expand_regions(voltages, optimized_regions.rising, optimized_regions.falling);
@@ -228,7 +232,7 @@ let two_pole_filter = (vec, s1, s2) => {
   return v;
 };
 
-let optimize_regions = (data, rising_idxs, falling_idxs) => {
+let optimize_regions = (data, rising_idxs, falling_idxs, print) => {
   let regions = {rising: [], falling: [], means: [], stddevs: []};
   for(let ii = 0; ii < rising_idxs.length; ii++){
     let reg = optimize_region(data, rising_idxs[ii], falling_idxs[ii]);
@@ -236,6 +240,15 @@ let optimize_regions = (data, rising_idxs, falling_idxs) => {
     regions.falling.push(reg.falling);
     regions.means.push(reg.mean);
     regions.stddevs.push(reg.stdev);
+
+    if(print && ii == 2 ){
+      console.log("========");
+      let obj = getRegressionSlope(data, reg.rising, reg.falling - reg.rising + 1, true);
+      console.log(JSON.stringify(obj, null, 2));
+      getRSquared(data, reg.rising, reg.falling - reg.rising + 1, obj.slope, obj.intercept, true);
+      console.log("========");
+    }
+
   }
   return regions;
 };
@@ -270,12 +283,33 @@ let optimize_region = (data, rising_idx, falling_idx) => {
     });
   }
 
+  // sort the regressions
+  region_regressions.sort((a, b) => {
+    let a_heuristic = a.slope;
+    let b_heuristic = b.slope;
+    if (a_heuristic > b_heuristic && a_heuristic / b_heuristic > (1 + better_slope_sig_margin))
+      return 1; // a comes later (worse) than b
+    if (a_heuristic < b_heuristic && b_heuristic / a_heuristic > (1 + better_slope_sig_margin))
+      return -1; // a comes earlier (better) than b
+
+    // break ties by the rule larger idx should sort earlier
+    if(a.idx > b.idx)
+      return -1;
+    else
+      return 1;
+
+    // technically unreachable code
+    return 0;
+  });
+
   // perform a secondary analysis on the topn results (closest to zero) slopes
   // to determine, which among them is the highest r^2 (coefficient of determination)
   let region_rsquared = [];
   let min_rsquared = 1;
   let max_rsquared = 0;
-  for(let ii = 0; ii < region_regressions.length; ii++){
+
+  // only consider the to ranked regressions
+  for(let ii = 0; ii < Math.floor(region_regressions.length * min_slope_percentile); ii++){
     let rsquared = getRSquared(data, region_regressions[ii].idx, num_samples,
       region_regressions[ii].slope, region_regressions[ii].intercept);
 
@@ -288,23 +322,19 @@ let optimize_region = (data, rising_idx, falling_idx) => {
       slope: region_regressions[ii].slope,
       intercept: region_regressions[ii].intercept,
       mean: region_regressions[ii].mean,
-      stdev: region_regressions[ii].stdev,
-      heuristic: slope_fit_heuristic({
-          slope: region_regressions[ii].slope,
-          rsquared: rsquared,
-        }, min_slope, max_slope, min_rsquared, max_rsquared)
+      stdev: region_regressions[ii].stdev
     });
 
   }
 
   region_rsquared.sort((a, b) => {
-    let a_heuristic = a.heuristic;
-    let b_heuristic = b.heuristic;
+    let a_heuristic = a.rsquared;
+    let b_heuristic = b.rsquared;
 
-    if (a_heuristic > b_heuristic && a_heuristic - b_heuristic > better_margin)
-      return -1;
-    if (a_heuristic < b_heuristic && b_heuristic - a_heuristic > better_margin)
-      return 1;
+    if (a_heuristic > b_heuristic && a_heuristic / b_heuristic > (1 + better_rsquared_sig_margin))
+      return -1; // a comes earlier (better) than b
+    if (a_heuristic < b_heuristic && b_heuristic / a_heuristic > (1 + better_rsquared_sig_margin))
+      return 1; // a comes later (worse) than b
 
     // break ties by the rule larger idx should sort earlier
     if(a.idx > b.idx)
@@ -316,16 +346,53 @@ let optimize_region = (data, rising_idx, falling_idx) => {
     return 0;
   });
 
-  //console.log(JSON.stringify(region_rsquared, null, 2));
+  // for the top r-sqaured results evaluate the heuristic
+  let final_results = [];
+  for(let ii = 0; ii < Math.floor(region_rsquared.length * min_fit_percentile); ii++){
+    final_results.push({
+      idx: region_rsquared[ii].idx,
+      rsquared: region_rsquared[ii].rsquared,
+      slope: region_rsquared[ii].slope,
+      intercept: region_rsquared[ii].intercept,
+      mean: region_rsquared[ii].mean,
+      stdev: region_rsquared[ii].stdev,
+      heuristic: slope_fit_heuristic(
+        region_rsquared[ii].slope,
+        region_rsquared[ii].rsquared,
+        min_slope, max_slope,
+        min_rsquared, max_rsquared)
+    });
+  }
+
+  // sort the results one last time
+  region_rsquared.sort((a, b) => {
+    let a_heuristic = a.heuristic;
+    let b_heuristic = b.heuristic;
+
+    if (a_heuristic > b_heuristic && a_heuristic / b_heuristic > (1 + better_rsquared_sig_margin))
+      return -1; // a comes earlier (better) than b
+    if (a_heuristic < b_heuristic && b_heuristic / a_heuristic > (1 + better_rsquared_sig_margin))
+      return 1; // a comes later (worse) than b
+
+    // break ties by the rule larger idx should sort earlier
+    if(a.idx > b.idx)
+      return -1;
+    else
+      return 1;
+
+    // technically unreachable code
+    return 0;
+  });
 
   // declare the winner!
-  region.rising = region_rsquared[0].idx;
+  region.rising = final_results[0].idx;
   region.falling = region.rising + num_samples - 1;
-  region.rsquared = region_rsquared[0].rsquared;
-  region.slope = region_rsquared[0].slope;
-  region.intercept = region_rsquared[0].intercept;
-  region.mean = region_rsquared[0].mean;
-  region.stdev = region_rsquared[0].stdev;
+  region.rsquared = final_results[0].rsquared;
+  region.slope = final_results[0].slope;
+  region.intercept = final_results[0].intercept;
+  region.mean = final_results[0].mean;
+  region.stdev = final_results[0].stdev;
+  region.heuristic = final_results[0].heuristic;
 
   // sanity check
   // n = (regions.rising + num_samples - 1) - regions.rising + 1
@@ -336,7 +403,7 @@ let optimize_region = (data, rising_idx, falling_idx) => {
   return region;
 };
 
-let getRegressionSlope = (data, start_idx, num_samples) => {
+let getRegressionSlope = (data, start_idx, num_samples, print) => {
   let uniform_time_vector = data.slice(start_idx, start_idx + num_samples).map((v, idx) => { return idx; });
   let other_vector = data.slice(start_idx, start_idx + num_samples);
   let n = num_samples;
@@ -347,10 +414,24 @@ let getRegressionSlope = (data, start_idx, num_samples) => {
   let sumxy = jStat.sum(jStat([uniform_time_vector, other_vector]).product());
   let rxy = ( sumxy - ( n * mx * my ) ) / ( n * sx * sy );
   let slope = rxy * sy / sx;
+
+  if(print){
+    console.log("=== regression ===");
+    console.log("uniform_time_vector: ", JSON.stringify(uniform_time_vector, null, 2));
+    console.log("other_vector: ", JSON.stringify(other_vector, null, 2));
+    console.log("n: ", n);
+    console.log("mx: ", mx);
+    console.log("my: ", my);
+    console.log("sx: ", sx);
+    console.log("sy: ", sy);
+    console.log("sumxy: ", sumxy);
+    console.log("rxy: ", rxy);
+  }
+
   return { slope: slope, intercept: my - slope * mx, mean: my, stdev: sy };
 };
 
-let getRSquared = (data, start_idx, num_samples, slope, intercept) => {
+let getRSquared = (data, start_idx, num_samples, slope, intercept, print) => {
   let data_vector = data.slice(start_idx, start_idx + num_samples);
   let uniform_time_vector = data_vector.map((v, idx) => { return idx; });
   let model_vector = uniform_time_vector.map((x) => {
@@ -358,6 +439,16 @@ let getRSquared = (data, start_idx, num_samples, slope, intercept) => {
   });
 
   let rho = jStat.corrcoeff(model_vector, data_vector);
+
+  if(print){
+    console.log("=== rsquared ===");
+    console.log("uniform_time_vector: ", JSON.stringify(uniform_time_vector, null, 2));
+    console.log("data_vector: ", JSON.stringify(data_vector, null, 2));
+    console.log("model_vector: ", JSON.stringify(model_vector, null, 2));
+    console.log("rho: ", rho);
+    console.log("rho^2: ", rho * rho);
+  }
+
   return rho * rho;
 };
 
@@ -385,21 +476,24 @@ let expand_regions = (data, rising_idxs, falling_idxs) => {
   return vec;
 };
 
-let slope_fit_heuristic = (obj, min_slope, max_slope, min_rsquared, max_rsquared) => {
-  let slope = obj.slope;     // values closer to min slope are better
-  let fit = obj.rsquared;    // values closer to max_rsquared are better
+let slope_fit_heuristic = (slope, fit, min_slope, max_slope, min_rsquared, max_rsquared) => {
+  // values closer to min slope are better
+  // values closer to max_rsquared are better
 
   // flip slope over, subtract off baseline, and normalize slope
-  slope -= min_slope;
-  slope = max_slope - slope; // now values closer to max slope are better
-  slope /= max_slope;
+  slope = remap(slope, min_slope, max_slope, 1, 0);
 
   // subtract off baseline and normalize rsquared
-  fit -= min_rsquared;
-  fit /= max_rsquared;
+  fit = remap(fit, 0, max_rsquared, 0, 1);
 
   // combine normalized, baseline adjusted values into one heuristic
   return slope_fit_weight * slope + (1 - slope_fit_weight) * fit;
+};
+
+let remap = (v, input_min, input_max, output_min, output_max) => {
+  let pct = (v - input_min) / (input_max - input_min);
+  let out = output_min + (output_max - output_min) * pct;
+  return out;
 };
 
 process.on('uncaughtException', (err) => {
