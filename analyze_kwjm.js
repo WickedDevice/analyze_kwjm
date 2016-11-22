@@ -135,7 +135,7 @@ parse(input, {columns: true}, (err, csv) => {
 
   BLV_keys.forEach((key, idx) => {
   //let key = BLV_keys[0];
-    let print = (idx == 0)
+    let print = false; // (idx == 0)
     createIndividualCsv(key, csv, null, filtered_temperature, temperature_slope, thresholded_temperature_slopes, results[key], rising_edges, falling_edges, print);
   });
 
@@ -241,6 +241,7 @@ let optimize_regions = (data, rising_idxs, falling_idxs, print) => {
     regions.means.push(reg.mean);
     regions.stddevs.push(reg.stdev);
 
+    // Note: region index to print verbose for is hardcoded to 2 here
     if(print && ii == 2 ){
       console.log("========");
       let obj = getRegressionSlope(data, reg.rising, reg.falling - reg.rising + 1, true);
