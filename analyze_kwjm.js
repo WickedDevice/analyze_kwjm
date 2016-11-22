@@ -21,7 +21,8 @@ let stiffness_pole1 = argv.s1 || 0.05;
 let stiffness_pole2 = argv.s2 || stiffness_pole1;
 let epsilon = argv.eps || 0.008;
 let analysis_width_pct = argv.pct || 0.20; // use at least this percentage of each analysis region
-let topn = argv.t || 30;
+let slope_fit_weight  = argv.h || 0.85; // git 85% priority to slope, 15% priority to fit
+let better_margin = argv.b || 0.01; // you hae to have a .01 better heuristic value to qualify as really better
 
 // check to see if the input file exists and if not exit with an error message and usage
 let input = null;
@@ -127,10 +128,10 @@ parse(input, {columns: true}, (err, csv) => {
     console.log("warning: not enough rising / falling edges found in temperature data");
   }
 
-  //BLV_keys.forEach((key) => {
-  let key = BLV_keys[0];
-  createIndividualCsv(key, csv, null, filtered_temperature, temperature_slope, thresholded_temperature_slopes, results[key], rising_edges, falling_edges);
-  //});
+  BLV_keys.forEach((key) => {
+  //let key = BLV_keys[0];
+    createIndividualCsv(key, csv, null, filtered_temperature, temperature_slope, thresholded_temperature_slopes, results[key], rising_edges, falling_edges);
+  });
 
 
 });
@@ -149,7 +150,7 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
   // generate filtered voltage
   let filtered_voltage = two_pole_filter(voltages, stiffness_pole1, stiffness_pole2);
   let optimized_regions = optimize_regions(filtered_voltage, rising, falling);
-  console.log(optimized_regions);
+  // console.log(optimized_regions);
 
   let debounced_thresh = expand_regions(voltages, optimized_regions.rising, optimized_regions.falling);
 
@@ -217,13 +218,21 @@ let optimize_region = (data, rising_idx, falling_idx) => {
   let region = {rising: 0, falling: 0};
   let window_length = falling_idx - rising_idx;
   let num_samples = Math.ceil(window_length * analysis_width_pct);
+  let half_window_length = Math.floor(window_length * 0.5);
   let region_regressions = [];
   // calculate the regression slope for each region of width num_samples
   // (data.length - 1) - ii + 1 = num_samples
   // data.length  - ii = num_samples
   // therefore, last ii = data.length - num_samples
-  for(let ii = 0; ii <= window_length - num_samples; ii++){
+  let min_slope = Number.MAX_VALUE;
+  let max_slope = 0;
+
+  // start at 2 * num_samples, effectively disallowing the answer to be flush left
+  for(let ii = half_window_length; ii <= window_length - num_samples; ii++){
     let obj = getRegressionSlope(data, rising_idx + ii, num_samples);
+    if(Math.abs(obj.slope) < min_slope) min_slope = Math.abs(obj.slope);
+    if(Math.abs(obj.slope) > max_slope) max_slope = Math.abs(obj.slope);
+
     region_regressions.push({
       idx: rising_idx + ii,
       slope: Math.abs(obj.slope),
@@ -231,44 +240,40 @@ let optimize_region = (data, rising_idx, falling_idx) => {
     });
   }
 
-  // ok we've got all the slopes, now find the top N of them.
-  // sort the region slopes by slope ascending
-  region_regressions.sort((a, b) => {
-    if (a.slope < b.slope)
-      return -1;
-    if (a.slope > b.slope)
-      return 1;
-
-    // slopes were equal...
-    // break ties by the rule larger idx should sort earlier
-    if(a.idx > b.idx)
-      return -1;
-    else
-      return 1;
-
-    // technically unreachable code
-    return 0;
-  });
-
   // perform a secondary analysis on the topn results (closest to zero) slopes
   // to determine, which among them is the highest r^2 (coefficient of determination)
   let region_rsquared = [];
-  for(let ii = 0; ii < topn; ii++){
+  let min_rsquared = 1;
+  let max_rsquared = 0;
+  for(let ii = 0; ii < region_regressions.length; ii++){
+    let rsquared = getRSquared(data, region_regressions[ii].idx, num_samples,
+      region_regressions[ii].slope, region_regressions[ii].intercept);
+
+    if(rsquared < min_rsquared) min_rsquared = rsquared;
+    if(rsquared > max_rsquared) max_rsquared = rsquared;
+
     region_rsquared.push({
       idx: region_regressions[ii].idx,
-      rsquared: getRSquared(data, region_regressions[ii].idx, num_samples,
-        region_regressions[ii].slope, region_regressions[ii].intercept)
+      rsquared: rsquared,
+      slope: region_regressions[ii].slope,
+      intercept: region_regressions[ii].intercept,
+      heuristic: slope_fit_heuristic({
+          slope: region_regressions[ii].slope,
+          rsquared: rsquared,
+        }, min_slope, max_slope, min_rsquared, max_rsquared)
     });
+
   }
 
   region_rsquared.sort((a, b) => {
-    // we want larger rsquared to sort earlier in the array
-    if (a.rsquared > b.rsquared)
+    let a_heuristic = a.heuristic;
+    let b_heuristic = b.heuristic;
+
+    if (a_heuristic > b_heuristic && a_heuristic - b_heuristic > better_margin)
       return -1;
-    if (a.rsquared < b.rsquared)
+    if (a_heuristic < b_heuristic && b_heuristic - a_heuristic > better_margin)
       return 1;
 
-    // sorting based on rsquared resulted in a tie...
     // break ties by the rule larger idx should sort earlier
     if(a.idx > b.idx)
       return -1;
@@ -278,15 +283,21 @@ let optimize_region = (data, rising_idx, falling_idx) => {
     // technically unreachable code
     return 0;
   });
+
+  //console.log(JSON.stringify(region_rsquared, null, 2));
 
   // declare the winner!
   region.rising = region_rsquared[0].idx;
   region.falling = region.rising + num_samples - 1;
+  region.rsquared = region_rsquared[0].rsquared;
+  region.slope = region_rsquared[0].slope;
+  region.intercept = region_rsquared[0].intercept;
+
   // sanity check
   // n = (regions.rising + num_samples - 1) - regions.rising + 1
   // n = num_samples.
 
-  console.log('done.');
+  console.log('done.', region);
 
   return region;
 };
@@ -306,12 +317,13 @@ let getRegressionSlope = (data, start_idx, num_samples) => {
 };
 
 let getRSquared = (data, start_idx, num_samples, slope, intercept) => {
-  let uniform_time_vector = data.slice(start_idx, start_idx + num_samples).map((v, idx) => { return idx; });
+  let data_vector = data.slice(start_idx, start_idx + num_samples);
+  let uniform_time_vector = data_vector.map((v, idx) => { return idx; });
   let model_vector = uniform_time_vector.map((x) => {
     return slope * x + intercept;
   });
 
-  let rho = jStat.corrcoeff(model_vector, data);
+  let rho = jStat.corrcoeff(model_vector, data_vector);
   return rho * rho;
 };
 
@@ -337,6 +349,23 @@ let expand_regions = (data, rising_idxs, falling_idxs) => {
   }
 
   return vec;
+};
+
+let slope_fit_heuristic = (obj, min_slope, max_slope, min_rsquared, max_rsquared) => {
+  let slope = obj.slope;     // values closer to min slope are better
+  let fit = obj.rsquared;    // values closer to max_rsquared are better
+
+  // flip slope over, subtract off baseline, and normalize slope
+  slope = max_slope - slope; // now values closer to max slope are better
+  slope -= min_slope;
+  slope /= max_slope;
+
+  // subtract off baseline and normalize rsquared
+  fit -= min_rsquared;
+  fit /= max_rsquared;
+
+  // combine normalized, baseline adjusted values into one heuristic
+  return slope_fit_weight * slope + (1 - slope_fit_weight) * fit;
 };
 
 process.on('uncaughtException', (err) => {
