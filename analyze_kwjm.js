@@ -59,7 +59,7 @@ let zero_pad = (n, digits) => {
   return str;
 }
 
-let output_filename_partial = `Batch_${zero_pad(lot_number, 4)}_Serial_${zero_pad(starting_serial_number, 4)}_${zero_pad(starting_serial_number + 50 - 1, 4)}`;
+let output_filename_partial = `Batch_${zero_pad(lot_number, 5)}_Serial_${zero_pad(starting_serial_number, 5)}_${zero_pad(starting_serial_number + 50 - 1, 5)}`;
 
 // check to see if the input file exists and if not exit with an error message and usage
 let input = null;
@@ -167,19 +167,97 @@ parse(input, {columns: true}, (err, csv) => {
     console.log("warning: not enough rising / falling edges found in temperature data");
   }
 
-  let blv_records = {};
+  let blv_records = [];
   BLV_keys.forEach((key, idx) => {
   //let key = BLV_keys[0];
     let print = false; // (idx == 0)
     let slot_number = +key.split("_")[1];
-    let target_fname = `${sensor_type}_Batch_${zero_pad(lot_number, 4)}_Serial_${zero_pad(starting_serial_number + slot_number - 1, 4)}_Slot_${zero_pad(slot_number, 2)}`;
+    let target_fname = `${sensor_type}_Batch_${zero_pad(lot_number, 5)}_Serial_${zero_pad(starting_serial_number + slot_number - 1, 5)}_Slot_${zero_pad(slot_number, 2)}`;
     let blv_record = createIndividualCsv(key, csv, target_fname, filtered_temperature, temperature_slope, thresholded_temperature_slopes, results[key], rising_edges, falling_edges, print);
-    blv_records[key] = blv_record;
+    blv_records.push(blv_record);
   });
 
-  console.log(blv_records);
+  generateSummaryTableFile(`${sensor_type}_${output_filename_partial}_summary`, blv_records);
 
 });
+
+let generateSummaryTableFile = (filename, records) => {
+  let input = [];
+  // push header
+  input.push([
+    "Slot #",
+    "Batch #",
+    "Serial #",
+    "Range1_Start_Time",
+    "Range1_End_Time",
+    "Range1_Num_Samples",
+    "Range1_Mean_Temperature",
+    "Range1_Mean_Voltage",
+    "Range1_Stdev_Voltage",
+    "Range2_Start_Time",
+    "Range2_End_Time",
+    "Range2_Num_Samples",
+    "Range2_Mean_Temperature",
+    "Range2_Mean_Voltage",
+    "Range2_Stdev_Voltage",
+    "Range3_Start_Time",
+    "Range3_End_Time",
+    "Range3_Num_Samples",
+    "Range3_Mean_Temperature",
+    "Range3_Mean_Voltage",
+    "Range3_Stdev_Voltage",
+    "Range4_Start_Time",
+    "Range4_End_Time",
+    "Range4_Num_Samples",
+    "Range4_Mean_Temperature",
+    "Range4_Mean_Voltage",
+    "Range4_Stdev_Voltage",
+    "Range5_Start_Time",
+    "Range5_End_Time",
+    "Range5_Num_Samples",
+    "Range5_Mean_Temperature",
+    "Range5_Mean_Voltage",
+    "Range5_Stdev_Voltage",
+    "BLV_Slope_1",
+    "BLV_Intercept_1",
+    "BLV_Slope_2",
+    "BLV_Intercept_2",
+    "BLV_Slope_3",
+    "BLV_Intercept_3",
+    "BLV_Slope_4",
+    "BLV_Intercept_4"
+  ]);
+
+  // now push all the individual rows
+  records.forEach((record, idx) => {
+    let entry = [
+      zero_pad(idx + 1, 2),                      // slot #
+      zero_pad(lot_number, 5),                   // batch #
+      zero_pad(starting_serial_number + idx, 5), // serial #
+    ];
+
+    record.ranges.forEach((range) => {
+      entry.push(range.start);
+      entry.push(range.end);
+      entry.push(range.num_samples);
+      entry.push(range.mean_temperature);
+      entry.push(range.mean_voltage);
+      entry.push(range.stdev_voltage);
+    });
+
+    record.blvs.forEach((blv) => {
+      entry.push(blv.slope);
+      entry.push(blv.intercept);
+    });
+
+    input.push(entry);
+  });
+
+  stringify(input, (err, output) => {
+    // write the string to file
+    fs.writeFileSync(`./outputs/${filename}.csv`, output);
+  });
+}
 
 let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope_thresh, voltages, rising, falling, print) => {
   console.log(`Creating ./outputs/${key}.csv`);
@@ -206,7 +284,7 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
     "Timestamp",
     "Temperature_degC",
     "Humidity_%",
-    csv[0]["Sensor_Type"],
+    `${csv[0]["Sensor_Type"]}_V`,
     "Filtered_Temperature_degC",
     "Filtered_Temp_Slopes",
     "Thresholded_TSlopes",
@@ -235,7 +313,7 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
 
   // now that we've done all this work to establish regions of interest, its time to actually
   // calculate the BLV data, how exciting!
-  let blv_data = [];
+  let blv_data = {ranges: [], blvs: []};
   for(let ii = 0; ii < optimized_regions.rising.length; ii++){
     let idx00 = optimized_regions.rising[ii];
     let idx01 = optimized_regions.falling[ii];
@@ -266,16 +344,17 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
       intercept = mean_voltage_hightemp - slope * mean_temperature_high; // b = y - mx
     }
 
+    blv_data.ranges.push({
+      start: csv[idx00]["Timestamp"],
+      end: csv[idx01]["Timestamp"],
+      num_samples: num_samples_lowtemp,
+      mean_temperature: mean_temperature_low,
+      mean_voltage: mean_voltage_lowtemp,
+      stdev_voltage: stdev_voltage_lowtemp
+    });
+
     if(slope !== null && intercept !== null) {
-      blv_data.push({
-        low_temp: mean_temperature_low,
-        high_temp: mean_temperature_high,
-        low_temp_num: num_samples_lowtemp,
-        high_temp_num: num_samples_hightemp,
-        v_low_temp: mean_voltage_lowtemp,
-        v_high_temp: mean_voltage_hightemp,
-        v_low_temp_dev: stdev_voltage_lowtemp,
-        v_high_temp_dev: stdev_voltage_hightemp,
+      blv_data.blvs.push({
         temperature: mean_temperature_low,
         slope: slope,
         intercept: intercept
@@ -284,6 +363,10 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
       console.log(`${sensor_type}_blv add`, mean_temperature_low, slope, intercept);
     }
   }
+
+  // TODO: Generate a summary file
+  // the contents of the smmary file are a table with columns of the keys of the blv record
+  // and a row for each bin
 
   return blv_data; // return the blv data
 };
