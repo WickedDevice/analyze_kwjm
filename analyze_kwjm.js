@@ -133,17 +133,22 @@ parse(input, {columns: true}, (err, csv) => {
     console.log("warning: not enough rising / falling edges found in temperature data");
   }
 
+  let blv_records = {};
   BLV_keys.forEach((key, idx) => {
   //let key = BLV_keys[0];
     let print = false; // (idx == 0)
-    createIndividualCsv(key, csv, null, filtered_temperature, temperature_slope, thresholded_temperature_slopes, results[key], rising_edges, falling_edges, print);
+    let blv_record = createIndividualCsv(key, csv, null, filtered_temperature, temperature_slope, thresholded_temperature_slopes, results[key], rising_edges, falling_edges, print);
+    blv_records[key] = blv_record;
   });
 
+  console.log(blv_records);
 
 });
 
 let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope_thresh, voltages, rising, falling, print) => {
   console.log(`Creating ./outputs/${key}.csv`);
+
+  let sensor_type = csv[0]["Sensor_Type"].toLowerCase();
 
   if(!filename){
     filename = key;
@@ -195,24 +200,56 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
   // now that we've done all this work to establish regions of interest, its time to actually
   // calculate the BLV data, how exciting!
   let blv_data = [];
-  for(let ii = 0; ii < optimized_regions.length - 1; ii++){
-    let idx00 = optimized_regions[ii].rising;
-    let idx01 = optimized_regions[ii].falling;
-    let idx10 = optimized_regions[ii+1].rising;
-    let idx11 = optimized_regions[ii+1].falling;
+  for(let ii = 0; ii < optimized_regions.rising.length; ii++){
+    let idx00 = optimized_regions.rising[ii];
+    let idx01 = optimized_regions.falling[ii];
+    let idx10 = optimized_regions.rising[ii+1];
+    let idx11 = optimized_regions.falling[ii+1];
+
     let mean_temperature_low = jStat.mean(filt_temp.slice(idx00, idx01));
-    let mean_temperature_high = jStat.mean(filt_temp.slice(idx10, idx11));
-    let mean_voltage_lowtemp = optimized_regions[ii].mean;
-    let mean_voltage_hightemp = optimized_regions[ii+1].mean;
+    let mean_voltage_lowtemp = optimized_regions.means[ii];
+    let stdev_voltage_lowtemp = optimized_regions.stdevs[ii];
+    let num_samples_lowtemp = optimized_regions.num_samples[ii];
 
-    let rise = mean_voltage_hightemp - mean_voltage_lowtemp;
-    let run = mean_temperature_high - mean_temperature_low;
-    let slope = rise / run;
-    let intercept = mean_voltage_hightemp - slope * mean_temperature_high; // b = y - mx
+    let mean_temperature_high = null;
+    let mean_voltage_hightemp = null;
+    let stdev_voltage_hightemp = null;
+    let num_samples_hightemp = null;
 
-    console.log(mean_temperature_low, slope, intercept);
+    let slope = null;
+    let intercept = null;
+
+    if(idx10 !== undefined && idx11 !== undefined) {
+      mean_temperature_high = jStat.mean(filt_temp.slice(idx10, idx11));
+      mean_voltage_hightemp = optimized_regions.means[ii + 1];
+      stdev_voltage_hightemp = optimized_regions.stdevs[ii + 1];
+      num_samples_hightemp = optimized_regions.num_samples[ii + 1];
+      let rise = mean_voltage_hightemp - mean_voltage_lowtemp;
+      let run = mean_temperature_high - mean_temperature_low;
+      slope = rise / run;
+      intercept = mean_voltage_hightemp - slope * mean_temperature_high; // b = y - mx
+    }
+
+    if(slope !== null && intercept !== null) {
+      blv_data.push({
+        low_temp: mean_temperature_low,
+        high_temp: mean_temperature_high,
+        low_temp_num: num_samples_lowtemp,
+        high_temp_num: num_samples_hightemp,
+        v_low_temp: mean_voltage_lowtemp,
+        v_high_temp: mean_voltage_hightemp,
+        v_low_temp_dev: stdev_voltage_lowtemp,
+        v_high_temp_dev: stdev_voltage_hightemp,
+        temperature: mean_temperature_low,
+        slope: slope,
+        intercept: intercept
+      });
+
+      console.log(`${sensor_type}_blv add`, mean_temperature_low, slope, intercept);
+    }
   }
 
+  return blv_data; // return the blv data
 };
 
 let two_pole_filter = (vec, s1, s2) => {
@@ -233,13 +270,14 @@ let two_pole_filter = (vec, s1, s2) => {
 };
 
 let optimize_regions = (data, rising_idxs, falling_idxs, print) => {
-  let regions = {rising: [], falling: [], means: [], stddevs: []};
+  let regions = {rising: [], falling: [], means: [], stdevs: [], num_samples:[]};
   for(let ii = 0; ii < rising_idxs.length; ii++){
     let reg = optimize_region(data, rising_idxs[ii], falling_idxs[ii]);
     regions.rising.push(reg.rising);
     regions.falling.push(reg.falling);
     regions.means.push(reg.mean);
-    regions.stddevs.push(reg.stdev);
+    regions.stdevs.push(reg.stdev);
+    regions.num_samples.push(reg.num_samples);
 
     // Note: region index to print verbose for is hardcoded to 2 here
     if(print && ii == 2 ){
@@ -400,7 +438,7 @@ let optimize_region = (data, rising_idx, falling_idx) => {
   // n = (regions.rising + num_samples - 1) - regions.rising + 1
   // n = num_samples.
 
-  console.log('done.', region);
+  console.log('done.'); //, region);
 
   return region;
 };
