@@ -79,6 +79,11 @@ let sensor_to_conversion_factor = {
   "CO": 1.0e6 / 350
 };
 
+let parts_per_suffix = {
+  "NO2": "b",
+  "CO": "m"
+};
+
 if(sensitivity_database){
   try {
     sensitivity_database = fs.readFileSync(sensitivity_database).toString();
@@ -334,7 +339,8 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
     "Filtered_Temp_Slopes",
     "Thresholded_TSlopes",
     "Optimized_Thresholded_TSlopes",
-    `Filtered_${csv[0]["Sensor_Type"]}_V`
+    `Filtered_${csv[0]["Sensor_Type"]}_V`,
+    `Filtered_${csv[0]["Sensor_Type"]}_pp${parts_per_suffix[sensor_type.toUpperCase()]}`
   ]);
 
   csv.forEach((row, idx) => {
@@ -347,7 +353,8 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
       filt_temp_slope[idx] || 0,
       slope_thresh[idx] || 0,
       debounced_thresh[idx] || 0,
-      filtered_voltage[idx] || 0
+      filtered_voltage[idx] || 0,
+      Math.abs(filtered_voltage[idx] - optimized_regions.means[0]) * sensitivity || 0
     ]);
   });
 
