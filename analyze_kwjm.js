@@ -12,7 +12,8 @@ let jStat = require('jStat').jStat;
 
 let usage = () => {
   console.log(`
-Usage: analyze_kwjm --i="filename.csv" --batch=3 --serial=14
+  
+Usage: analyze_kwjm --i="filename.csv" --batch=3 --serial=14 [--sensitivity="sensitivity_db_filename.csv"]
 `);
 
 };
@@ -104,6 +105,9 @@ if(sensitivity_database){
     usage();
     process.exit(1);
   }
+}
+else{
+  sensitivity_database = [];
 }
 
 let lookupSensitivity = (lot, slot) => {
