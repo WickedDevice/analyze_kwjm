@@ -3,6 +3,7 @@
 // and humidity from the source file
 
 let parse = require('csv-parse');
+let syncParse = require('csv-parse/lib/sync');
 let stringify = require('csv-stringify');
 let fs = require('fs');
 let argv = require('minimist')(process.argv.slice(2));
@@ -30,6 +31,7 @@ let min_slope_percentile = argv.r || 0.75;
 let min_fit_percentile = argv.g || 0.75;
 let lot_number = argv.batch || null;
 let starting_serial_number = argv.serial || null;
+let sensitivity_database = argv.sensitivity || null;
 
 if(lot_number === null || starting_serial_number === null){
   console.error("lot_number aond starting_serial_number are required arguments");
@@ -57,7 +59,7 @@ let zero_pad = (n, digits) => {
     str = `0${str}`;
   }
   return str;
-}
+};
 
 let output_filename_partial = `Batch_${zero_pad(lot_number, 5)}_Serial_${zero_pad(starting_serial_number, 5)}_${zero_pad(starting_serial_number + 50 - 1, 5)}`;
 
@@ -71,6 +73,46 @@ catch(err){
   usage();
   process.exit(1);
 }
+
+let sensor_to_conversion_factor = {
+  "NO2": 1.0e9 / 350,
+  "CO": 1.0e6 / 350
+};
+
+if(sensitivity_database){
+  try {
+    sensitivity_database = fs.readFileSync(sensitivity_database).toString();
+    sensitivity_database = syncParse(sensitivity_database, {auto_parse: true, skip_empty_lines: true});
+    sensitivity_database = sensitivity_database.slice(1); // drop the header row
+    sensitivity_database.forEach((val, idx) => {
+      // bust open the [2] field which is the QR code data
+      // extract the sensitivity (last field)
+      let sensitivity = val[2].split(" ");
+      let conversion_factor = sensor_to_conversion_factor[sensitivity[sensitivity.length - 3]];
+      sensitivity =  conversion_factor / (Math.abs(+sensitivity[sensitivity.length - 1]));
+      sensitivity_database[idx][2] = sensitivity;
+    });
+    // console.log(sensitivity_database);
+  }
+  catch(err){
+    console.log(err);
+    usage();
+    process.exit(1);
+  }
+}
+
+let lookupSensitivity = (lot, slot) => {
+  // console.log(`Looking for lot ${lot} and slot ${slot}`);
+  for(let ii = 0; ii < sensitivity_database.length; ii++){
+    // console.log(sensitivity_database[ii][0], sensitivity_database[ii][3]);
+    if(sensitivity_database[ii][0] === lot && sensitivity_database[ii][3] === slot){
+      // console.log(`Found sensitivity ${sensitivity_database[ii][2]}`);
+      return sensitivity_database[ii][2];
+    }
+  }
+  //console.log("Not found.");
+  return null;
+};
 
 parse(input, {columns: true}, (err, csv) => {
   let keys = Object.keys(csv[0]);
@@ -173,7 +215,10 @@ parse(input, {columns: true}, (err, csv) => {
     let print = false; // (idx == 0)
     let slot_number = +key.split("_")[1];
     let target_fname = `${sensor_type}_Batch_${zero_pad(lot_number, 5)}_Serial_${zero_pad(starting_serial_number + slot_number - 1, 5)}_Slot_${zero_pad(slot_number, 2)}`;
-    let blv_record = createIndividualCsv(key, csv, target_fname, filtered_temperature, temperature_slope, thresholded_temperature_slopes, results[key], rising_edges, falling_edges, print);
+    let sensitivity = lookupSensitivity(lot_number, idx + 1);
+    let blv_record = createIndividualCsv(key, csv, target_fname,
+      filtered_temperature, temperature_slope, thresholded_temperature_slopes,
+      results[key], rising_edges, falling_edges, sensitivity, print);
     blv_records.push(blv_record);
   });
 
@@ -257,9 +302,9 @@ let generateSummaryTableFile = (filename, records) => {
     // write the string to file
     fs.writeFileSync(`./outputs/${filename}.csv`, output);
   });
-}
+};
 
-let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope_thresh, voltages, rising, falling, print) => {
+let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope_thresh, voltages, rising, falling, sensitivity, print) => {
   console.log(`Creating ./outputs/${key}.csv`);
 
   let sensor_type = csv[0]["Sensor_Type"].toLowerCase();
@@ -344,13 +389,20 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
       intercept = mean_voltage_hightemp - slope * mean_temperature_high; // b = y - mx
     }
 
+    let pseudo_baseline_voltage = mean_voltage_lowtemp;
+    if(blv_data.ranges.length > 0){
+      pseudo_baseline_voltage = blv_data.ranges[0].mean_voltage;
+    }
+
     blv_data.ranges.push({
       start: csv[idx00]["Timestamp"],
       end: csv[idx01]["Timestamp"],
       num_samples: num_samples_lowtemp,
       mean_temperature: mean_temperature_low,
       mean_voltage: mean_voltage_lowtemp,
-      stdev_voltage: stdev_voltage_lowtemp
+      stdev_voltage: stdev_voltage_lowtemp,
+      mean_concentration: Math.abs(pseudo_baseline_voltage - mean_voltage_lowtemp) * sensitivity,
+      stdev_concentration: sensitivity * stdev_voltage_lowtemp
     });
 
     if(slope !== null && intercept !== null) {
@@ -364,7 +416,7 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
     }
   }
 
-  generateIndividualBlvFile(`${filename}_blv`, sensor_type, blv_data);
+  generateIndividualBlvFile(`${filename}_blv`, sensor_type, blv_data, sensitivity);
 
   return blv_data; // return the blv data
 };
