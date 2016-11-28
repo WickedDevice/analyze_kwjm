@@ -35,7 +35,7 @@ let starting_serial_number = argv.serial || null;
 let sensitivity_database = argv.sensitivity || null;
 
 if(lot_number === null || starting_serial_number === null){
-  console.error("lot_number aond starting_serial_number are required arguments");
+  console.error("lot_number and starting_serial_number are required arguments");
   usage();
   process.exit(1);
 }
@@ -94,9 +94,11 @@ if(sensitivity_database){
       // bust open the [2] field which is the QR code data
       // extract the sensitivity (last field)
       let sensitivity = val[2].split(" ");
+      let native_sensitivity = +sensitivity[sensitivity.length - 1];
       let conversion_factor = sensor_to_conversion_factor[sensitivity[sensitivity.length - 3]];
-      sensitivity =  conversion_factor / (Math.abs(+sensitivity[sensitivity.length - 1]));
+      sensitivity =  conversion_factor / (Math.abs(native_sensitivity));
       sensitivity_database[idx][2] = sensitivity;
+      sensitivity_database[idx].push(native_sensitivity);
     });
     // console.log(sensitivity_database);
   }
@@ -122,6 +124,21 @@ let lookupSensitivity = (lot, slot) => {
   //console.log("Not found.");
   return null;
 };
+
+let lookupNativeSensitivity = (lot, slot) => {
+  // console.log(`Looking for lot ${lot} and slot ${slot}`);
+  for(let ii = 0; ii < sensitivity_database.length; ii++){
+    // console.log(sensitivity_database[ii][0], sensitivity_database[ii][3]);
+    if(sensitivity_database[ii][0] === lot && sensitivity_database[ii][3] === slot){
+      // console.log(`Found sensitivity ${sensitivity_database[ii][2]}`);
+      let num_fields = sensitivity_database[ii].length;
+      return sensitivity_database[ii][num_fields-1]; // last field is the native sensitivity
+    }
+  }
+  //console.log("Not found.");
+  return null;
+};
+
 
 parse(input, {columns: true}, (err, csv) => {
   let keys = Object.keys(csv[0]);
@@ -225,9 +242,10 @@ parse(input, {columns: true}, (err, csv) => {
     let slot_number = +key.split("_")[1];
     let target_fname = `${sensor_type}_Batch_${zero_pad(lot_number, 5)}_Serial_${zero_pad(starting_serial_number + slot_number - 1, 5)}_Slot_${zero_pad(slot_number, 2)}`;
     let sensitivity = lookupSensitivity(lot_number, idx + 1);
+    let native_sensitivity = lookupNativeSensitivity(lot_number, idx + 1);
     let blv_record = createIndividualCsv(key, csv, target_fname,
       filtered_temperature, temperature_slope, thresholded_temperature_slopes,
-      results[key], rising_edges, falling_edges, sensitivity, print);
+      results[key], rising_edges, falling_edges, sensitivity, native_sensitivity, print);
     blv_records.push(blv_record);
   });
 
@@ -313,7 +331,7 @@ let generateSummaryTableFile = (filename, records) => {
   });
 };
 
-let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope_thresh, voltages, rising, falling, sensitivity, print) => {
+let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope_thresh, voltages, rising, falling, sensitivity, native_sensitivity, print) => {
   console.log(`Creating ./outputs/${key}.csv`);
 
   let sensor_type = csv[0]["Sensor_Type"].toLowerCase();
@@ -427,13 +445,15 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
     }
   }
 
-  generateIndividualBlvFile(`${filename}_blv`, sensor_type, blv_data, sensitivity);
+  generateIndividualBlvFile(`${filename}_blv`, sensor_type, blv_data, native_sensitivity);
 
   return blv_data; // return the blv data
 };
 
-let generateIndividualBlvFile = (filename, sensor_type, data) => {
+let generateIndividualBlvFile = (filename, sensor_type, data, native_sensitivity) => {
   let commands = [];
+  native_sensitivity = Math.abs(native_sensitivity);
+  commands.push(`${sensor_type}_sen ${native_sensitivity}`);
   commands.push(`${sensor_type}_blv clear`);
   data.blvs.forEach((blv) => {
     let command = `${sensor_type}_blv add ${blv.temperature} ${blv.slope} ${blv.intercept}`;
