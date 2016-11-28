@@ -49,10 +49,11 @@ let numFound = 0;
 let record = null;
 
 for(let ii = 0; ii < sensors_database.length; ii++){
-  record = sensors_database[ii];
-  if(record[IDX_SENSOR_BOARD_BATCH] === batch && record[IDX_SENSOR_BOARD_SERIAL] === serial){
+  let r = sensors_database[ii];
+  if(r[IDX_SENSOR_BOARD_BATCH] === batch && r[IDX_SENSOR_BOARD_SERIAL] === serial){
     targetIndex = ii;
     numFound++;
+    record = r;
   }
 }
 
@@ -64,7 +65,6 @@ if(numFound == 1){
     try{
       let filename = path.join(json_folder,
         `NO2_Batch_${zero_pad(record[IDX_NO2_KWJ_BATCH], 5)}_Serial_${zero_pad(record[IDX_NO2_KWJ_SERIAL], 5)}_Slot_${zero_pad(ii,2)}_blv.json`);
-      // console.log(filename);
       no2_record = require(filename);
       numFound++;
     }
