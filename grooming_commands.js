@@ -80,7 +80,7 @@ if(numFound == 1){
 
   let co_record = null;
   numFound = 0;
-  for(let ii = 1; ii < 50; ii++){
+  for(let ii = 1; ii <= 50; ii++){
     try{
       let filename = path.join(json_folder,
         `CO_Batch_${zero_pad(record[IDX_CO_KWJ_BATCH], 5)}_Serial_${zero_pad(record[IDX_CO_KWJ_SERIAL], 5)}_Slot_${zero_pad(ii,2)}_blv.json`);
