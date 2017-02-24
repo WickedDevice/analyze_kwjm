@@ -456,7 +456,7 @@ let generateIndividualBlvFile = (filename, sensor_type, data, native_sensitivity
   commands.push(`${sensor_type}_sen ${native_sensitivity}`);
   commands.push(`${sensor_type}_blv clear`);
   data.blvs.forEach((blv) => {
-    let command = `${sensor_type}_blv add ${blv.temperature} ${blv.slope} ${blv.intercept}`;
+    let command = `${sensor_type}_blv add ${blv.temperature.toFixed(8)} ${blv.slope.toFixed(8)} ${blv.intercept.toFixed(8)}`;
     commands.push(command);
   });
 
