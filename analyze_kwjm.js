@@ -33,6 +33,8 @@ let min_fit_percentile = argv.g || 0.75;
 let lot_number = argv.batch || null;
 let starting_serial_number = argv.serial || null;
 let sensitivity_database = argv.sensitivity || null;
+let minimum_optimized_duration_minutes = argv.mindur || 15;
+let minimum_optimized_sample_count = argv.minsamples || 60;
 
 if(lot_number === null || starting_serial_number === null){
   console.error("lot_number and starting_serial_number are required arguments");
@@ -236,9 +238,17 @@ parse(input, {
   }
 
   // make those two vectors the same length
-  let min_l = Math.min(rising_edges.length, falling_edges.length);
-  rising_edges = rising_edges.slice(0, min_l);
-  falling_edges = falling_edges.slice(0, min_l);
+  if(falling_edges.length < rising_edges.length){
+    // artificially add a falling edge to the end
+    // console.log("Adding Falling Edge");
+    falling_edges.push(csv.length);
+  }
+  else{
+    // drop the last falling edge (unreachable?)
+    let min_l = Math.min(rising_edges.length, falling_edges.length);
+    rising_edges = rising_edges.slice(0, min_l);
+    falling_edges = falling_edges.slice(0, min_l);
+  }
 
   console.log(rising_edges, falling_edges);
   if(rising_edges.length < 5 || falling_edges.length < 5){
@@ -253,6 +263,9 @@ parse(input, {
     let target_fname = null;
     if(sensor_type){
       target_fname = `${sensor_type}_Batch_${zero_pad(lot_number, 5)}_Serial_${zero_pad(starting_serial_number + slot_number - 1, 5)}_Slot_${zero_pad(slot_number, 2)}`;
+    }
+    else{
+      target_fname = `${input_filename.split('.')[0]}_${key}`;
     }
     let sensitivity = lookupSensitivity(lot_number, idx + 1);
     let native_sensitivity = lookupNativeSensitivity(lot_number, idx + 1);
@@ -354,7 +367,7 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
     return;
   }
 
-  console.log(`Creating ./outputs/${key}.csv`);
+  console.log(`Creating ./outputs/${filename}.csv`);
 
   let sensor_type = csv[0]["sensor_type"] ? csv[0]["sensor_type"].toLowerCase() : null;
   if(!sensor_type){
@@ -422,11 +435,6 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
     ]);
   });
 
-  stringify(input, (err, output) => {
-    // write the string to file
-    fs.writeFileSync(`./outputs/${filename}.csv`, output);
-  });
-
   // now that we've done all this work to establish regions of interest, its time to actually
   // calculate the BLV data, how exciting!
   let blv_data = {ranges: [], blvs: []};
@@ -440,6 +448,17 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
     let mean_voltage_lowtemp = optimized_regions.means[ii];
     let stdev_voltage_lowtemp = optimized_regions.stdevs[ii];
     let num_samples_lowtemp = optimized_regions.num_samples[ii];
+
+    let duration_minutes = moment(csv[idx01].timestamp, "MM/DD/YYYY HH:mm:ss").diff(moment(csv[idx00].timestamp, "MM/DD/YYYY HH:mm:ss"), "minutes");
+    // console.log(csv[idx00].timestamp, csv[idx01].timestamp, duration_minutes, num_samples_lowtemp);
+    if((num_samples_lowtemp < minimum_optimized_sample_count)
+      || (duration_minutes < minimum_optimized_duration_minutes)){
+      // discard this region
+      for(let jj = idx00; jj <= idx01; jj++){
+        input[jj][7] = 0;
+      }
+      continue;
+    }
 
     let mean_temperature_high = null;
     let mean_voltage_hightemp = null;
@@ -486,6 +505,11 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
       console.log(`${sensor_type}_blv add`, mean_temperature_low, slope, intercept);
     }
   }
+
+  stringify(input, (err, output) => {
+    // write the string to file
+    fs.writeFileSync(`./outputs/${filename}.csv`, output);
+  });
 
   generateIndividualBlvFile(`${filename}_blv`, sensor_type, blv_data, native_sensitivity);
 
