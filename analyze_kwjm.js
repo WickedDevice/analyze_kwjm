@@ -35,6 +35,12 @@ let starting_serial_number = argv.serial || null;
 let sensitivity_database = argv.sensitivity || null;
 let minimum_optimized_duration_minutes = argv.mindur || 15;
 let minimum_optimized_sample_count = argv.minsamples || 60;
+const plot = !!argv.plot;
+let ChartjsNode = null;
+if(plot){
+  ChartjsNode = require('chartjs-node');
+}
+
 const dropDateRanges = argv.drop ? argv.drop.split(",").map((v) => {
   let range = v.split("-");
   if(range.length !== 2){
@@ -47,6 +53,7 @@ const dropDateRanges = argv.drop ? argv.drop.split(",").map((v) => {
   }
   return {start, end};
 }).filter(v => v !== null) : [];
+
 
 
 if(lot_number === null || starting_serial_number === null){
@@ -561,6 +568,8 @@ let generateIndividualBlvFile = (filename, sensor_type, data, native_sensitivity
   };
 
   fs.writeFileSync(`./outputs/${filename}.json`, JSON.stringify(obj, null, 2));
+  generateScatterChart(`./outputs/${filename}.png`, obj);
+
 };
 
 let isNumeric = (n) => {
@@ -859,6 +868,154 @@ let remap = (v, input_min, input_max, output_min, output_max) => {
   let out = output_min + (output_max - output_min) * pct;
   return out;
 };
+
+
+function generateScatterChart(filename, data){
+  if(!plot) return;
+
+  let type = data.commands[0].split("_")[0];
+  // console.log(JSON.stringify(data, null, 2));
+  // console.log("Type: ", type);
+
+  let plugins = {
+    beforeDraw: function (chartInstance, easing) {
+        let self = chartInstance.config;    /* Configuration object containing type, data, options */
+        let ctx = chartInstance.chart.ctx;  /* Canvas context used to draw with */
+        ctx.fillStyle = "white";
+        ctx.fillRect(0, 0, chartInstance.chart.width, chartInstance.chart.height);
+    }
+  };
+
+  let datasets = [];
+
+  let idx = data.commands.indexOf(data.commands.find(c => c.indexOf('clear') >= 0))
+  let blvs = data.commands.slice(idx+1);
+  // console.log(blvs);
+  blvs.forEach((blv, idx) => {
+    let params = blv.split(' ').slice(2).map(v => +v);
+    let nextParams = blvs[idx+1] ? blvs[idx+1].split(' ').slice(2).map(v => +v) : [data.data.ranges.slice(-1)[0].x];
+    let firstTemp = params[0];
+    let secondTemp = nextParams[0];
+
+    let colors = [
+      'rgba(255, 0, 0, 1.0)',
+      'rgba(0, 255, 0, 1.0)',
+      'rgba(0, 0, 255, 1.0)',
+      'rgba(255, 140, 0, 1.0)',
+      'rgba(255, 0, 255, 1.0)',
+      'rgba(0, 255, 255, 1.0)',
+    ]
+
+    let dataset = {
+        label: `${idx}-hide`,
+        data: [{
+          x: firstTemp,
+          y: params[1]*firstTemp + params[2]
+        },{
+          x: secondTemp,
+          y: params[1]*secondTemp + params[2]
+        }],
+        backgroundColor: 'rgba(0, 0, 0, 0.0)',
+        borderColor: colors[idx]
+    };
+    // console.log(JSON.stringify(dataset, null, 2));
+    datasets.push(dataset);
+
+    let errorBar = {
+        label: `${idx}-errorbar-hide`,
+        data: [{
+          x: data.data.ranges[idx].mean_temperature,
+          y: data.data.ranges[idx].mean_voltage + data.data.ranges[idx].stdev_voltage,
+        },{
+          x: data.data.ranges[idx].mean_temperature,
+          y: data.data.ranges[idx].mean_voltage - data.data.ranges[idx].stdev_voltage,
+        }],
+        backgroundColor: 'rgba(0, 0, 0, 0.0)',
+        borderColor: colors[idx]
+    };
+    datasets.push(errorBar);
+
+  });
+
+  let errorBar = {
+      label: `${idx}-errorbar-hide`,
+      data: [{
+        x: data.data.ranges.slice(-1)[0].mean_temperature,
+        y: data.data.ranges.slice(-1)[0].mean_voltage + data.data.ranges.slice(-1)[0].stdev_voltage,
+      },{
+        x: data.data.ranges.slice(-1)[0].mean_temperature,
+        y: data.data.ranges.slice(-1)[0].mean_voltage - data.data.ranges.slice(-1)[0].stdev_voltage,
+      }],
+      backgroundColor: 'rgba(0, 0, 0, 0.0)',
+      borderColor: 'rgba(0, 0, 0, 1.0)',
+  };
+  datasets.push(errorBar);
+
+
+  datasets.push({
+      label: `${type.toUpperCase()} BLV vs Temperature[degC]`,
+      data: data.data.ranges.map((v) => {
+        return {
+          x: v.mean_temperature,
+          y: v.mean_voltage
+        }
+      }),
+      // backgroundColor: 'rgba(0, 0, 0, 0.0)',
+      borderColor: 'rgba(0, 0, 0, 1.0)'
+  });
+
+  // 600x600 canvas size
+  let chartNode = new ChartjsNode(600, 600);
+  return chartNode.drawChart({
+      type: 'scatter',
+      data: {
+          datasets
+      },
+      options: {
+          scales: {
+              xAxes: [{
+                  type: 'linear',
+                  position: 'bottom'
+              }]
+          },
+          plugins,
+          legend: {
+            labels: {
+              filter: function(legendItem, chartData) {
+                // return false to hide the label
+                if(legendItem.text.indexOf('hide') >= 0){
+                  return false;
+                }
+                return true;
+              }
+            }
+          }
+      }
+  })
+  .then(() => {
+      // chart is created
+
+      // get image as png buffer
+      return chartNode.getImageBuffer('image/png');
+  })
+  .then((buffer) => {
+      Array.isArray(buffer) // => true
+      // as a stream
+      return chartNode.getImageStream('image/png');
+  })
+  .then((streamResult) => {
+      // using the length property you can do things like
+      // directly upload the image to s3 by using the
+      // stream and length properties
+      streamResult.stream // => Stream object
+      streamResult.length // => Integer length of stream
+      // write to a file
+      return chartNode.writeImageToFile('image/png', `./${filename}`);
+  })
+  .then(() => {
+    return chartNode.destroy();
+  });
+}
 
 process.on('uncaughtException', (err) => {
   console.log(err);

@@ -9,6 +9,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "chart.js": "^2.6.0",
+    "chartjs-node": "^1.4.3",
     "csv-parse": "^1.1.7",
     "csv-stringify": "^1.0.4",
     "jStat": "^1.5.3",
