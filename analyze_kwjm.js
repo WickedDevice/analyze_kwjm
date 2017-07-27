@@ -35,6 +35,19 @@ let starting_serial_number = argv.serial || null;
 let sensitivity_database = argv.sensitivity || null;
 let minimum_optimized_duration_minutes = argv.mindur || 15;
 let minimum_optimized_sample_count = argv.minsamples || 60;
+const dropDateRanges = argv.drop ? argv.drop.split(",").map((v) => {
+  let range = v.split("-");
+  if(range.length !== 2){
+    return null;
+  }
+  let start = moment(range[0].trim(), "MM/DD/YYYY HH:mm:ss");
+  let end = moment(range[1].trim(), "MM/DD/YYYY HH:mm:ss");
+  if(!start.isValid() || !end.isValid()){
+    return null;
+  }
+  return {start, end};
+}).filter(v => v !== null) : [];
+
 
 if(lot_number === null || starting_serial_number === null){
   console.error("lot_number and starting_serial_number are required arguments");
@@ -154,6 +167,22 @@ parse(input, {
   }
 }, (err, csv) => {
   let keys = Object.keys(csv[0]);
+
+  console.log("pre-processing drop dates");
+  csv = csv.filter((r) => {
+    let m = moment(r.timestamp, 'MM/DD/YYYY HH:mm:ss');
+
+    let ok = true;
+    dropDateRanges.forEach((range) => {
+      if(m.isSameOrAfter(range.start) && m.isSameOrBefore(range.end)){
+        ok = false;
+      }
+    });
+
+    return ok;
+  });
+  console.log("done.");
+
 
   // create an array for each column
   let BLV_keys = [];
