@@ -12,7 +12,7 @@ let jStat = require('jStat').jStat;
 
 let usage = () => {
   console.log(`
-  
+
 Usage: analyze_kwjm --i="filename.csv" --batch=3 --serial=14 [--sensitivity="sensitivity_db_filename.csv"]
 `);
 
@@ -77,12 +77,18 @@ catch(err){
 
 let sensor_to_conversion_factor = {
   "NO2": 1.0e9 / 350,
-  "CO": 1.0e6 / 350
+  "CO": 1.0e6 / 350,
+  "SO2": 1.0e9 / 350,
+  "O3": 1.0e9 / 350,
 };
 
 let parts_per_suffix = {
   "NO2": "b",
-  "CO": "m"
+  "CO": "m",
+  "SO2": "b",
+  "O3": "b",
+  "CO2": "m",
+  "VOC": "b"
 };
 
 if(sensitivity_database){
@@ -140,7 +146,11 @@ let lookupNativeSensitivity = (lot, slot) => {
 };
 
 
-parse(input, {columns: true}, (err, csv) => {
+parse(input, {
+  columns: (line) => {
+    return line.map( v => v.toLowerCase().replace('[','_').replace(']','') );
+  }
+}, (err, csv) => {
   let keys = Object.keys(csv[0]);
 
   // create an array for each column
@@ -151,7 +161,7 @@ parse(input, {columns: true}, (err, csv) => {
 
     // while we're at it, make an individual
     // CSV file for each sensor
-    if(key.indexOf("Slot") >= 0){
+    if(key.indexOf("_v") >= 0){
       BLV_keys.push(key);
     }
   });
@@ -159,13 +169,13 @@ parse(input, {columns: true}, (err, csv) => {
   // transpose the rows into columns
   // and coerce the results into numbers
   let sensor_type = null;
-  let earliestUnixTimestamp = moment(csv[0]["Timestamp"], "MM/DD/YYYY HH:mm:ss").unix();
+  let earliestUnixTimestamp = moment(csv[0]["timestamp"], "MM/DD/YYYY HH:mm:ss").unix();
   csv.forEach( (row) => {
     Object.keys(row).forEach((key) => {
-      if (key === "Timestamp"){
+      if (key === "timestamp"){
         results[key].push(moment(row[key], "MM/DD/YYYY HH:mm:ss").unix() - earliestUnixTimestamp);
       }
-      else if(key !== "Sensor_Type"){
+      else if(key !== "sensor_type"){
         results[key].push(+row[key]);
       }
       else{
@@ -177,7 +187,7 @@ parse(input, {columns: true}, (err, csv) => {
 
   // at this point we have a vector for each sensor
   // as well as a time vector of seconds (since the first record)
-  let filtered_temperature = two_pole_filter(results["Temperature_degC"], stiffness_pole1, stiffness_pole2);
+  let filtered_temperature = two_pole_filter(results["temperature_degc"], stiffness_pole1, stiffness_pole2);
 
   // then apply a difference filter on the result
   let temperature_slope = two_pole_filter(jStat.diff(filtered_temperature), stiffness_pole1, stiffness_pole2);
@@ -240,7 +250,10 @@ parse(input, {columns: true}, (err, csv) => {
   //let key = BLV_keys[0];
     let print = false; // (idx == 0)
     let slot_number = +key.split("_")[1];
-    let target_fname = `${sensor_type}_Batch_${zero_pad(lot_number, 5)}_Serial_${zero_pad(starting_serial_number + slot_number - 1, 5)}_Slot_${zero_pad(slot_number, 2)}`;
+    let target_fname = null;
+    if(sensor_type){
+      target_fname = `${sensor_type}_Batch_${zero_pad(lot_number, 5)}_Serial_${zero_pad(starting_serial_number + slot_number - 1, 5)}_Slot_${zero_pad(slot_number, 2)}`;
+    }
     let sensitivity = lookupSensitivity(lot_number, idx + 1);
     let native_sensitivity = lookupNativeSensitivity(lot_number, idx + 1);
     let blv_record = createIndividualCsv(key, csv, target_fname,
@@ -249,7 +262,12 @@ parse(input, {columns: true}, (err, csv) => {
     blv_records.push(blv_record);
   });
 
-  generateSummaryTableFile(`${sensor_type}_${output_filename_partial}_summary`, blv_records);
+  if(sensor_type){
+    generateSummaryTableFile(`${sensor_type}_${output_filename_partial}_summary`, blv_records);
+  }
+  else{
+    generateSummaryTableFile(`summary`, blv_records);
+  }
 
 });
 
@@ -332,9 +350,33 @@ let generateSummaryTableFile = (filename, records) => {
 };
 
 let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope_thresh, voltages, rising, falling, sensitivity, native_sensitivity, print) => {
+  if(key.indexOf("_v") < 0){
+    return;
+  }
+
   console.log(`Creating ./outputs/${key}.csv`);
 
-  let sensor_type = csv[0]["Sensor_Type"].toLowerCase();
+  let sensor_type = csv[0]["sensor_type"] ? csv[0]["sensor_type"].toLowerCase() : null;
+  if(!sensor_type){
+    if(key.indexOf('no2') >= 0){
+      sensor_type = 'no2';
+    }
+    else if(key.indexOf('co2') >= 0){
+      sensor_type = 'co2';
+    }
+    else if(key.indexOf('co') >= 0){
+      sensor_type = 'co';
+    }
+    else if(key.indexOf('so2') >= 0){
+      sensor_type = 'so2';
+    }
+    else if(key.indexOf('o3') >= 0){
+      sensor_type = 'o3';
+    }
+    else if(key.indexOf('voc') >= 0){
+      sensor_type = 'voc';
+    }
+  }
 
   if(!filename){
     filename = key;
@@ -356,20 +398,20 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
     "Timestamp",
     "Temperature_degC",
     "Humidity_%",
-    `${csv[0]["Sensor_Type"]}_V`,
+    `${sensor_type.toUpperCase()}_V`,
     "Filtered_Temperature_degC",
     "Filtered_Temp_Slopes",
     "Thresholded_TSlopes",
     "Optimized_Thresholded_TSlopes",
-    `Filtered_${csv[0]["Sensor_Type"]}_V`,
-    `Filtered_${csv[0]["Sensor_Type"]}_pp${parts_per_suffix[sensor_type.toUpperCase()]}`
+    `Filtered_${sensor_type.toUpperCase()}_V`,
+    `Filtered_${sensor_type.toUpperCase()}_pp${parts_per_suffix[sensor_type.toUpperCase()]}`
   ]);
 
   csv.forEach((row, idx) => {
     input.push([
-      row["Timestamp"],
-      row["Temperature_degC"],
-      row["Humidity_%"],
+      row["timestamp"],
+      row["temperature_degc"],
+      row["humidity_%"],
       row[key],
       filt_temp[idx] || 0,
       filt_temp_slope[idx] || 0,
@@ -424,8 +466,8 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
     }
 
     blv_data.ranges.push({
-      start: csv[idx00]["Timestamp"],
-      end: csv[idx01]["Timestamp"],
+      start: csv[idx00]["timestamp"],
+      end: csv[idx01]["timestamp"],
       num_samples: num_samples_lowtemp,
       mean_temperature: mean_temperature_low,
       mean_voltage: mean_voltage_lowtemp,
@@ -468,13 +510,26 @@ let generateIndividualBlvFile = (filename, sensor_type, data, native_sensitivity
   fs.writeFileSync(`./outputs/${filename}.json`, JSON.stringify(obj, null, 2));
 };
 
+let isNumeric = (n) => {
+  return !isNaN(parseFloat(n)) && isFinite(n);
+};
+
 let two_pole_filter = (vec, s1, s2) => {
   let v_first_pole = vec[0];
   let v = []; // second pole output
-
+  let first = true;
+  let lastNumericValue = 0;
   for(let ii = 0; ii < vec.length; ii++){
-    if(ii == 0){
+    if(!isNumeric(vec[ii])){
+      vec[ii] = lastNumericValue; // flat interpolation
+    }
+    else{
+      lastNumericValue = vec[ii];
+    }
+
+    if(first){
       v.push(v_first_pole );
+      first = false;
     }
     else{
       v_first_pole = v_first_pole + ( vec[ii] - v_first_pole ) * s1;
