@@ -19,14 +19,14 @@ Usage: analyze_kwjm --i="filename.csv" --batch=3 --serial=14 [--sensitivity="sen
 };
 
 let input_filename = argv.i || "usb0.csv";
-let stiffness_pole1 = argv.s || 0.05;
+let stiffness_pole1 = argv.s || 0.18;
 let stiffness_pole2 = argv.q || stiffness_pole1;
 let epsilon = argv.e || 0.008;           // used by thresholding binning algorithm
-let analysis_width_pct = argv.p || 0.20; // use at least this percentage of each analysis region
+let analysis_width_pct = argv.p || 0.35; // use at least this percentage of each analysis region
 let slope_fit_weight  = argv.h || 0.85;  // git 85% priority to slope, 15% priority to fit
 let better_slope_sig_margin = argv.m || 0.05;    // you hae to have a 5% better value to qualify as *really* better
 let better_rsquared_sig_margin = argv.y || 0.05; // you hae to have a 5% better value to qualify as *really* better
-let taboo_front_pct = argv.f || 0.50;    // don't allow solutions in the first 50% of the window
+let taboo_front_pct = argv.f || 0.30;    // don't allow solutions in the first 50% of the window
 let taboo_tail_pct = argv.t || 0.10;     // don't allow solutions in the last 10% of the window
 let min_slope_percentile = argv.r || 0.75;
 let min_fit_percentile = argv.g || 0.75;
@@ -34,7 +34,7 @@ let lot_number = argv.batch || null;
 let starting_serial_number = argv.serial || null;
 let sensitivity_database = argv.sensitivity || null;
 let minimum_optimized_duration_minutes = argv.mindur || 15;
-let minimum_optimized_sample_count = argv.minsamples || 60;
+let minimum_optimized_sample_count = argv.minsamples || 15;
 const plot = !!argv.plot;
 let ChartjsNode = null;
 if(plot){
@@ -167,6 +167,7 @@ let lookupNativeSensitivity = (lot, slot) => {
   return null;
 };
 
+let csvRef = null;
 
 parse(input, {
   columns: (line) => {
@@ -190,6 +191,7 @@ parse(input, {
   });
   console.log("done.");
 
+  csvRef = csv;
 
   // create an array for each column
   let BLV_keys = [];
@@ -242,7 +244,7 @@ parse(input, {
   let falling_edges = [];
   let level_state = thresholded_temperature_slopes[0];
   let last_edge_idx = 0;
-  const minimum_samples_between_edges = 50;
+  const minimum_samples_between_edges = 20;
   // let debounced_thresholding = [];
   thresholded_temperature_slopes = thresholded_temperature_slopes.map((val, idx) => {
     let new_val = level_state;
@@ -490,6 +492,15 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
     if((num_samples_lowtemp < minimum_optimized_sample_count)
       || (duration_minutes < minimum_optimized_duration_minutes)){
       // discard this region
+
+      if((num_samples_lowtemp < minimum_optimized_sample_count)){
+        console.log(`Num samples in region ${moment(csv[idx00].timestamp, "MM/DD/YYYY HH:mm:ss").format("MM/DD/YYYY HH:mm:ss")} to ${moment(csv[idx01].timestamp, "MM/DD/YYYY HH:mm:ss").format("MM/DD/YYYY HH:mm:ss")} was ${num_samples_lowtemp} samples (min is ${minimum_optimized_sample_count} samples)`)
+      }
+
+      if(duration_minutes < minimum_optimized_duration_minutes){
+        console.log(`Duration of region ${moment(csv[idx00].timestamp, "MM/DD/YYYY HH:mm:ss").format("MM/DD/YYYY HH:mm:ss")} to ${moment(csv[idx01].timestamp, "MM/DD/YYYY HH:mm:ss").format("MM/DD/YYYY HH:mm:ss")} was ${duration_minutes} minutes (min is ${minimum_optimized_duration_minutes} minutes)`)
+      }
+
       for(let jj = idx00; jj <= idx01; jj++){
         input[jj][7] = 0;
       }
@@ -631,6 +642,14 @@ let optimize_region = (data, rising_idx, falling_idx) => {
   let num_samples = Math.ceil(window_length * analysis_width_pct);
   let start_offset_idx = Math.floor(window_length * taboo_front_pct);
   let end_offset_idx = Math.floor(window_length * taboo_tail_pct);
+
+  // console.log(rising_idx, start_offset_idx, csvRef[rising_idx]);
+  // console.log(falling_idx, end_offset_idx, csvRef[falling_idx]);
+  let startTime = moment(csvRef[rising_idx].timestamp, "MM/DD/YYYY HH:mm:ss");
+  let endTime = moment(csvRef[falling_idx] ? csvRef[falling_idx].timestamp : csvRef[falling_idx-1].timestamp, "MM/DD/YYYY HH:mm:ss");
+  let totalDurationMinutes = endTime.diff(startTime,"minutes");
+  console.log(`Optimizing region: ${startTime.format("MM/DD/YYYY HH:mm:ss")} to ${endTime.format("MM/DD/YYYY HH:mm:ss")}, has ${window_length} samples and total duration ${totalDurationMinutes} minutes`);
+  console.log(`   After truncation of taboo front and end, ${(falling_idx - end_offset_idx) - (rising_idx + start_offset_idx)} total samples remain in region`)
 
   let region_regressions = [];
   // calculate the regression slope for each region of width num_samples
