@@ -588,7 +588,14 @@ let isNumeric = (n) => {
 };
 
 let two_pole_filter = (vec, s1, s2) => {
-  let v_first_pole = vec[0];
+  let firstNumericValue = vec.find(v => isNumeric(v));
+  let firstNumericValueIdx = vec.indexOf(firstNumericValue);
+  if(firstNumericValueIdx < 0){
+    console.log("PANIC - no numeric values in vector");
+    return;
+  }
+
+  let v_first_pole = isNumeric(vec[0]) ? vec[0] : firstNumericValue;
   let v = []; // second pole output
   let first = true;
   let lastNumericValue = 0;
@@ -601,7 +608,7 @@ let two_pole_filter = (vec, s1, s2) => {
     }
 
     if(first){
-      v.push(v_first_pole );
+      v.push(v_first_pole);
       first = false;
     }
     else{
