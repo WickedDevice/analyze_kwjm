@@ -515,16 +515,16 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
     let slope = null;
     let intercept = null;
 
-    if(idx10 !== undefined && idx11 !== undefined) {
-      mean_temperature_high = jStat.mean(filt_temp.slice(idx10, idx11));
-      mean_voltage_hightemp = optimized_regions.means[ii + 1];
-      stdev_voltage_hightemp = optimized_regions.stdevs[ii + 1];
-      num_samples_hightemp = optimized_regions.num_samples[ii + 1];
-      let rise = mean_voltage_hightemp - mean_voltage_lowtemp;
-      let run = mean_temperature_high - mean_temperature_low;
-      slope = rise / run;
-      intercept = mean_voltage_hightemp - slope * mean_temperature_high; // b = y - mx
-    }
+    // if(idx10 !== undefined && idx11 !== undefined) {
+    //   mean_temperature_high = jStat.mean(filt_temp.slice(idx10, idx11));
+    //   mean_voltage_hightemp = optimized_regions.means[ii + 1];
+    //   stdev_voltage_hightemp = optimized_regions.stdevs[ii + 1];
+    //   num_samples_hightemp = optimized_regions.num_samples[ii + 1];
+    //   let rise = mean_voltage_hightemp - mean_voltage_lowtemp;
+    //   let run = mean_temperature_high - mean_temperature_low;
+    //   slope = rise / run;
+    //   intercept = mean_voltage_hightemp - slope * mean_temperature_high; // b = y - mx
+    // }
 
     let pseudo_baseline_voltage = mean_voltage_lowtemp;
     if(blv_data.ranges.length > 0){
@@ -542,15 +542,39 @@ let createIndividualCsv = (key, csv, filename, filt_temp, filt_temp_slope, slope
       stdev_concentration: sensitivity * stdev_voltage_lowtemp
     });
 
-    if(slope !== null && intercept !== null) {
-      blv_data.blvs.push({
-        temperature: mean_temperature_low,
-        slope: slope,
-        intercept: intercept
-      });
+    // if(slope !== null && intercept !== null) {
+    //   blv_data.blvs.push({
+    //     temperature: mean_temperature_low,
+    //     slope: slope,
+    //     intercept: intercept
+    //   });
+    //
+    //   console.log(`${sensor_type}_blv add`, mean_temperature_low, slope, intercept);
+    // }
+  }
 
-      console.log(`${sensor_type}_blv add`, mean_temperature_low, slope, intercept);
-    }
+  // at this point we know all the ranges that were kept, and we can calculate slope / intercept forms
+  blv_data.ranges.sort((a, b) => {
+    return a.mean_temperature - b.mean_temperature;
+  });
+
+  for(let ii = 0; ii < blv_data.ranges.length - 1; ii++){
+    let low_range = blv_data.ranges[ii];
+    let high_range = blv_data.ranges[ii+1];
+    let mean_voltage_lowtemp = low_range.mean_voltage;
+    let mean_voltage_hightemp = high_range.mean_voltage;
+    let mean_temperature_low = low_range.mean_temperature;
+    let mean_temperature_high = high_range.mean_temperature;
+    let rise = mean_voltage_hightemp - mean_voltage_lowtemp;
+    let run = mean_temperature_high - mean_temperature_low;
+    slope = rise / run;
+    intercept = mean_voltage_hightemp - slope * mean_temperature_high; // b = y - mx
+    blv_data.blvs.push({
+      temperature: mean_temperature_low,
+      slope: slope,
+      intercept: intercept
+    });
+    console.log(`${sensor_type}_blv add`, mean_temperature_low, slope, intercept);
   }
 
   stringify(input, (err, output) => {
